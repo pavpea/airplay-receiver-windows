@@ -738,6 +738,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out release tag
+        uses: actions/checkout@v6
       - name: Download Windows installer
         uses: actions/download-artifact@v7
         with:
