@@ -1,0 +1,317 @@
+package io.github.qiuspace.airplay.app.ui;
+
+import io.github.qiuspace.airplay.app.AppIcons;
+import io.github.qiuspace.airplay.app.i18n.I18n;
+import io.github.qiuspace.airplay.server.ServerState;
+import com.sun.jna.Platform;
+import com.sun.jna.platform.win32.User32;
+import lombok.extern.slf4j.Slf4j;
+
+import javax.swing.BorderFactory;
+import javax.swing.Box;
+import javax.swing.BoxLayout;
+import javax.swing.JButton;
+import javax.swing.JLabel;
+import javax.swing.JPanel;
+import javax.swing.JSeparator;
+import javax.swing.JWindow;
+import javax.swing.SwingConstants;
+import javax.swing.SwingUtilities;
+import javax.swing.Timer;
+import javax.swing.UIManager;
+import java.awt.Color;
+import java.awt.Dimension;
+import java.awt.Graphics2D;
+import java.awt.GraphicsConfiguration;
+import java.awt.GraphicsDevice;
+import java.awt.GraphicsEnvironment;
+import java.awt.Insets;
+import java.awt.MouseInfo;
+import java.awt.Point;
+import java.awt.PointerInfo;
+import java.awt.Rectangle;
+import java.awt.RenderingHints;
+import java.awt.SystemTray;
+import java.awt.Toolkit;
+import java.awt.TrayIcon;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
+import java.awt.geom.RoundRectangle2D;
+
+@Slf4j
+final class TrayController implements AutoCloseable {
+
+    private static final int VK_LEFT_BUTTON = 0x01;
+    private static final int VK_RIGHT_BUTTON = 0x02;
+    private static final int VK_MIDDLE_BUTTON = 0x04;
+
+    private final MainFrame frame;
+    private final I18n i18n;
+    private final TrayIcon trayIcon;
+    private final JLabel stateLabel = new JLabel();
+    private final JWindow popupWindow;
+    private final Timer outsideClickMonitor;
+    private int previousMouseButtons;
+
+    TrayController(MainFrame frame, I18n i18n) {
+        this.frame = frame;
+        this.i18n = i18n;
+        if (!SystemTray.isSupported()) {
+            trayIcon = null;
+            popupWindow = null;
+            outsideClickMonitor = null;
+            return;
+        }
+
+        popupWindow = buildPopupWindow();
+        outsideClickMonitor = new Timer(50, event -> dismissOnOutsideClick());
+        TrayIcon createdIcon = new TrayIcon(AppIcons.trayIcon(), "AirPlay Receiver");
+        createdIcon.setImageAutoSize(true);
+        createdIcon.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseReleased(MouseEvent event) {
+                if (SwingUtilities.isRightMouseButton(event)) {
+                    Point anchor = pointerLocation(event);
+                    SwingUtilities.invokeLater(() -> showPopup(anchor.x, anchor.y));
+                } else if (isSingleLeftClick(
+                        event.getButton(), event.getClickCount())) {
+                    SwingUtilities.invokeLater(() -> {
+                        hidePopup();
+                        frame.restoreAndShow();
+                    });
+                }
+            }
+        });
+
+        TrayIcon installedIcon = null;
+        try {
+            SystemTray.getSystemTray().add(createdIcon);
+            installedIcon = createdIcon;
+        } catch (Exception error) {
+            popupWindow.dispose();
+            log.warn("System tray is unavailable; closing the window will exit", error);
+        }
+        trayIcon = installedIcon;
+        update(ServerState.STOPPED, false);
+    }
+
+    boolean available() {
+        return trayIcon != null;
+    }
+
+    void update(ServerState state, boolean playing) {
+        if (trayIcon == null) {
+            return;
+        }
+        String stateText = StatusText.resolve(i18n, state, playing);
+        stateLabel.setText(i18n.text("tray.status", stateText));
+    }
+
+    void showError(String message) {
+        if (trayIcon != null) {
+            trayIcon.displayMessage(i18n.text("error.title"), message, TrayIcon.MessageType.ERROR);
+        }
+    }
+
+    @Override
+    public void close() {
+        if (trayIcon != null) {
+            hidePopup();
+            popupWindow.dispose();
+            SystemTray.getSystemTray().remove(trayIcon);
+        }
+    }
+
+    private JWindow buildPopupWindow() {
+        JWindow popup = new JWindow(frame);
+        popup.setAlwaysOnTop(true);
+        popup.setFocusableWindowState(true);
+        popup.setBackground(new Color(0, 0, 0, 0));
+
+        JPanel menu = new TrayMenuPanel();
+        menu.setLayout(new BoxLayout(menu, BoxLayout.Y_AXIS));
+        menu.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
+
+        JButton show = menuButton(i18n.text("tray.show"));
+        show.addActionListener(event -> {
+            hidePopup();
+            frame.restoreAndShow();
+        });
+        menu.add(show);
+        menu.add(Box.createVerticalStrut(3));
+
+        stateLabel.setBorder(BorderFactory.createEmptyBorder(7, 12, 7, 12));
+        stateLabel.putClientProperty("FlatLaf.styleClass", "small");
+        stateLabel.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT);
+        menu.add(stateLabel);
+        menu.add(Box.createVerticalStrut(6));
+
+        JSeparator separator = new JSeparator();
+        separator.setMaximumSize(new Dimension(Integer.MAX_VALUE, 1));
+        menu.add(separator);
+        menu.add(Box.createVerticalStrut(5));
+
+        JButton exit = menuButton(i18n.text("tray.exit"));
+        exit.addActionListener(event -> {
+            hidePopup();
+            frame.exitApplication();
+        });
+        menu.add(exit);
+
+        popup.setContentPane(menu);
+        popup.addWindowFocusListener(new WindowAdapter() {
+            @Override
+            public void windowLostFocus(WindowEvent event) {
+                hidePopup();
+            }
+        });
+        return popup;
+    }
+
+    private JButton menuButton(String text) {
+        JButton button = new JButton(text);
+        button.setHorizontalAlignment(SwingConstants.LEFT);
+        button.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT);
+        button.setMaximumSize(new Dimension(Integer.MAX_VALUE, 38));
+        button.putClientProperty("FlatLaf.style",
+                "borderWidth: 0; focusWidth: 0; arc: 10; margin: 8,12,8,12;"
+                        + "hoverBackground: fade(@accentColor,16%); pressedBackground: fade(@accentColor,24%)");
+        return button;
+    }
+
+    private void showPopup(int screenX, int screenY) {
+        if (trayIcon == null) {
+            return;
+        }
+        popupWindow.pack();
+        Dimension size = popupWindow.getSize();
+        Rectangle usable = usableScreenBounds(screenX, screenY);
+        int x = Math.max(usable.x + 8, Math.min(screenX + 8,
+                usable.x + usable.width - size.width - 8));
+        int y = screenY - size.height - 8;
+        y = Math.max(usable.y + 8, Math.min(y, usable.y + usable.height - size.height - 8));
+        popupWindow.setLocation(x, y);
+        try {
+            popupWindow.setShape(new RoundRectangle2D.Double(0, 0, size.width, size.height, 18, 18));
+        } catch (UnsupportedOperationException ignored) {
+            // The Swing menu still works on graphics drivers without shaped-window support.
+        }
+        popupWindow.setVisible(true);
+        popupWindow.toFront();
+        popupWindow.requestFocus();
+        previousMouseButtons = currentMouseButtons();
+        outsideClickMonitor.restart();
+    }
+
+    private void hidePopup() {
+        if (outsideClickMonitor != null) {
+            outsideClickMonitor.stop();
+        }
+        if (popupWindow != null) {
+            popupWindow.setVisible(false);
+        }
+    }
+
+    private void dismissOnOutsideClick() {
+        if (!popupWindow.isVisible()) {
+            outsideClickMonitor.stop();
+            return;
+        }
+        int currentButtons = currentMouseButtons();
+        PointerInfo pointer = MouseInfo.getPointerInfo();
+        Point pointerLocation = pointer == null ? null : pointer.getLocation();
+        if (shouldDismissPopup(
+                popupWindow.getBounds(), pointerLocation,
+                previousMouseButtons, currentButtons)) {
+            hidePopup();
+            return;
+        }
+        previousMouseButtons = currentButtons;
+    }
+
+    static boolean shouldDismissPopup(Rectangle popupBounds,
+                                      Point pointer,
+                                      int previousButtons,
+                                      int currentButtons) {
+        int newlyPressed = currentButtons & ~previousButtons;
+        return newlyPressed != 0
+                && pointer != null
+                && !popupBounds.contains(pointer);
+    }
+
+    static boolean isSingleLeftClick(int button, int clickCount) {
+        return button == MouseEvent.BUTTON1 && clickCount == 1;
+    }
+
+    private static int currentMouseButtons() {
+        if (!Platform.isWindows()) {
+            return 0;
+        }
+        int buttons = 0;
+        if ((User32.INSTANCE.GetAsyncKeyState(VK_LEFT_BUTTON) & 0x8000) != 0) {
+            buttons |= 1;
+        }
+        if ((User32.INSTANCE.GetAsyncKeyState(VK_MIDDLE_BUTTON) & 0x8000) != 0) {
+            buttons |= 2;
+        }
+        if ((User32.INSTANCE.GetAsyncKeyState(VK_RIGHT_BUTTON) & 0x8000) != 0) {
+            buttons |= 4;
+        }
+        return buttons;
+    }
+
+    private Point pointerLocation(MouseEvent event) {
+        PointerInfo pointer = MouseInfo.getPointerInfo();
+        if (pointer != null) {
+            return pointer.getLocation();
+        }
+        return new Point(event.getX(), event.getY());
+    }
+
+    private Rectangle usableScreenBounds(int x, int y) {
+        GraphicsConfiguration selected = null;
+        for (GraphicsDevice device : GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices()) {
+            GraphicsConfiguration configuration = device.getDefaultConfiguration();
+            if (configuration.getBounds().contains(x, y)) {
+                selected = configuration;
+                break;
+            }
+        }
+        if (selected == null) {
+            selected = frame.getGraphicsConfiguration();
+        }
+        if (selected == null) {
+            selected = GraphicsEnvironment.getLocalGraphicsEnvironment()
+                    .getDefaultScreenDevice().getDefaultConfiguration();
+        }
+        Rectangle bounds = selected.getBounds();
+        Insets insets = Toolkit.getDefaultToolkit().getScreenInsets(selected);
+        return new Rectangle(bounds.x + insets.left, bounds.y + insets.top,
+                bounds.width - insets.left - insets.right,
+                bounds.height - insets.top - insets.bottom);
+    }
+
+    private static final class TrayMenuPanel extends JPanel {
+
+        TrayMenuPanel() {
+            setOpaque(false);
+        }
+
+        @Override
+        protected void paintComponent(java.awt.Graphics graphics) {
+            Graphics2D g = (Graphics2D) graphics.create();
+            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            Color base = UIManager.getColor("Panel.background");
+            Color fill = base == null ? new Color(24, 29, 47) : base;
+            g.setColor(new Color(fill.getRed(), fill.getGreen(), fill.getBlue(), 248));
+            g.fillRoundRect(0, 0, getWidth(), getHeight(), 18, 18);
+            Color border = UIManager.getColor("Component.borderColor");
+            g.setColor(border == null ? new Color(100, 115, 170, 80) : border);
+            g.drawRoundRect(0, 0, getWidth() - 1, getHeight() - 1, 18, 18);
+            g.dispose();
+            super.paintComponent(graphics);
+        }
+    }
+}

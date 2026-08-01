@@ -1,0 +1,136 @@
+package io.github.qiuspace.airplay.server.internal;
+
+import io.github.qiuspace.airplay.server.AirPlayConfig;
+import io.github.qiuspace.airplay.server.AirPlayConsumer;
+import io.github.qiuspace.airplay.server.AirPlayServerListener;
+import io.github.qiuspace.airplay.server.SessionInfo;
+import io.github.qiuspace.airplay.server.internal.handler.control.ControlHandler;
+import io.github.qiuspace.airplay.server.internal.handler.session.SessionManager;
+import io.netty.bootstrap.ServerBootstrap;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.ServerSocketChannel;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.handler.codec.http.HttpObjectAggregator;
+import io.netty.handler.codec.rtsp.RtspDecoder;
+import io.netty.handler.codec.rtsp.RtspEncoder;
+import io.netty.handler.logging.ByteBufFormat;
+import io.netty.handler.logging.LogLevel;
+import io.netty.handler.logging.LoggingHandler;
+import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
+
+import java.net.InetSocketAddress;
+import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+
+@Slf4j
+public final class ControlServer {
+
+    private final SessionManager sessionManager;
+    private final AirPlayConfig airPlayConfig;
+    private final AirPlayConsumer airPlayConsumer;
+
+    private EventLoopGroup bossGroup;
+    private EventLoopGroup workerGroup;
+    private Channel serverChannel;
+
+    @Getter
+    private int port;
+
+    public ControlServer(AirPlayConfig airPlayConfig,
+                         AirPlayConsumer airPlayConsumer,
+                         AirPlayServerListener listener) {
+        this.airPlayConfig = airPlayConfig;
+        this.airPlayConsumer = airPlayConsumer;
+        sessionManager = new SessionManager(airPlayConsumer, listener);
+    }
+
+    public synchronized void start() throws InterruptedException {
+        if (serverChannel != null && serverChannel.isOpen()) {
+            return;
+        }
+
+        bossGroup = eventLoopGroup();
+        workerGroup = eventLoopGroup();
+        try {
+            serverChannel = new ServerBootstrap()
+                    .group(bossGroup, workerGroup)
+                    .channel(serverSocketChannelClass())
+                    .localAddress(new InetSocketAddress(0))
+                    .childHandler(new ChannelInitializer<SocketChannel>() {
+                        @Override
+                        public void initChannel(SocketChannel channel) {
+                            channel.pipeline().addLast(
+                                    new RtspDecoder(),
+                                    new RtspEncoder(),
+                                    new HttpObjectAggregator(64 * 1024),
+                                    new LoggingHandler(LogLevel.DEBUG, ByteBufFormat.SIMPLE),
+                                    new ControlHandler(sessionManager, airPlayConfig, airPlayConsumer));
+                        }
+                    })
+                    .childOption(ChannelOption.TCP_NODELAY, true)
+                    .childOption(ChannelOption.SO_REUSEADDR, true)
+                    .childOption(ChannelOption.SO_KEEPALIVE, true)
+                    .bind()
+                    .sync()
+                    .channel();
+
+            port = ((InetSocketAddress) serverChannel.localAddress()).getPort();
+            log.info("AirPlay control server listening on port: {}", port);
+        } catch (InterruptedException | RuntimeException error) {
+            shutdownGroups();
+            throw error;
+        }
+    }
+
+    public synchronized void stop() {
+        sessionManager.closeAll();
+        if (serverChannel != null) {
+            serverChannel.close().syncUninterruptibly();
+            serverChannel = null;
+        }
+        shutdownGroups();
+        port = 0;
+        log.info("AirPlay control server stopped");
+    }
+
+    public void disconnectActiveSession() {
+        sessionManager.disconnectActiveSession();
+    }
+
+    public Optional<SessionInfo> activeSession() {
+        return sessionManager.activeSession();
+    }
+
+    private void shutdownGroups() {
+        io.netty.util.concurrent.Future<?> bossShutdown = null;
+        io.netty.util.concurrent.Future<?> workerShutdown = null;
+        if (bossGroup != null) {
+            bossShutdown = bossGroup.shutdownGracefully(0, 1, TimeUnit.SECONDS);
+            bossGroup = null;
+        }
+        if (workerGroup != null) {
+            workerShutdown = workerGroup.shutdownGracefully(0, 1, TimeUnit.SECONDS);
+            workerGroup = null;
+        }
+        if (bossShutdown != null) {
+            bossShutdown.awaitUninterruptibly(1, TimeUnit.SECONDS);
+        }
+        if (workerShutdown != null) {
+            workerShutdown.awaitUninterruptibly(1, TimeUnit.SECONDS);
+        }
+    }
+
+    private EventLoopGroup eventLoopGroup() {
+        return new NioEventLoopGroup(1);
+    }
+
+    private Class<? extends ServerSocketChannel> serverSocketChannelClass() {
+        return NioServerSocketChannel.class;
+    }
+}

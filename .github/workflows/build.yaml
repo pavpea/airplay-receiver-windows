@@ -1,0 +1,772 @@
+name: AirPlay Receiver CI
+
+on:
+  push:
+    branches:
+      - '**'
+    tags:
+      - 'v*'
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: JVM tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+      - name: Verify Gradle wrapper permissions
+        run: test -x ./gradlew
+      - name: Run shared JVM tests
+        run: ./gradlew :lib:test :server:test :player:gstreamer:test --console=plain
+
+  windows-package:
+    name: Windows package
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      GSTREAMER_VERSION: 1.28.5
+      GSTREAMER_SHA256: 51ee5eaec33008e8409d8cf6f6884457f22aa3bd515f8856f993a3eaab903530
+      WINDOWS_SIGNING_KEY_USER: ${{ secrets.WINDOWS_SIGNING_KEY_USER }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          # Git for Windows tar cannot reliably save the Gradle cache on the
+          # hosted Windows runner. Keep Gradle setup/wrapper validation, but
+          # disable only this cache writer; the GStreamer cache remains active.
+          cache-disabled: true
+      - name: Verify release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $versionMatch = Select-String -Path '.\build.gradle' -Pattern "^\s*version\s*=\s*'([^']+)'\s*$"
+          $version = $versionMatch.Matches[0].Groups[1].Value
+          $expectedTag = "v$version"
+          if ($env:GITHUB_REF_NAME -ne $expectedTag) {
+            throw "Release tag '$env:GITHUB_REF_NAME' does not match project version '$expectedTag'"
+          }
+      - name: Cache GStreamer installer
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}\gstreamer-installer.exe
+          key: gstreamer-msvc-x64-${{ env.GSTREAMER_VERSION }}-${{ env.GSTREAMER_SHA256 }}
+      - name: Download and stage GStreamer
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'gstreamer-installer.exe'
+          $runtime = Join-Path $env:RUNNER_TEMP 'gstreamer-runtime'
+          if (!(Test-Path $installer)) {
+            $downloadUrl = "https://gstreamer.freedesktop.org/pkg/windows/$env:GSTREAMER_VERSION/msvc/gstreamer-1.0-msvc-x86_64-$env:GSTREAMER_VERSION.exe"
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              try {
+                Invoke-WebRequest -UseBasicParsing -OutFile $installer $downloadUrl
+                break
+              } catch {
+                if ($attempt -eq 3) { throw }
+                Start-Sleep -Seconds ([Math]::Pow(2, $attempt - 1))
+              }
+            }
+          }
+          if (!(Test-Path $installer)) { throw 'GStreamer installer download did not produce a file' }
+          $hash = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
+          if ($hash -ne $env:GSTREAMER_SHA256) { throw "Unexpected GStreamer checksum: $hash" }
+          if (Test-Path $runtime) { Remove-Item -LiteralPath $runtime -Recurse -Force }
+          $process = Start-Process -FilePath $installer -Wait -PassThru -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/DIR=$runtime"
+          if ($process.ExitCode -ne 0) { throw "GStreamer installer failed with exit code $($process.ExitCode)" }
+          $gstreamerDll = Get-ChildItem $runtime -Recurse -Filter 'gstreamer-1.0-0.dll' | Select-Object -First 1
+          if (!$gstreamerDll) {
+            $gstreamerDll = Get-ChildItem $runtime -Recurse -Filter 'libgstreamer-1.0-0.dll' | Select-Object -First 1
+          }
+          if (!$gstreamerDll) { throw 'The staged GStreamer runtime does not contain its core DLL' }
+          $runtimeRoot = $gstreamerDll.Directory.Parent.FullName
+          "GSTREAMER_RUNTIME_DIR=$runtimeRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Test and stage app image
+        shell: pwsh
+        run: |
+          .\gradlew.bat test :player:app:stageGStreamerRuntime --console=plain
+          if ($LASTEXITCODE -ne 0) { throw "Gradle test/stage failed with exit code $LASTEXITCODE" }
+          $runtimeFiles = Get-ChildItem '.\player\app\build\package\staged-image\AirPlay Receiver\gstreamer' -File -Recurse
+          $runtimeBytes = ($runtimeFiles | Measure-Object -Property Length -Sum).Sum
+          "Pruned GStreamer runtime: $($runtimeFiles.Count) files, $([math]::Round($runtimeBytes / 1MB, 1)) MiB" | Write-Host
+          if ($runtimeBytes -gt 80MB) { throw 'Pruned GStreamer runtime exceeded the 80 MiB packaging limit' }
+      - name: Verify pruned media runtime
+        shell: pwsh
+        run: |
+          $gstRoot = (Resolve-Path '.\player\app\build\package\staged-image\AirPlay Receiver\gstreamer').Path
+          $env:PATH = "$gstRoot\bin;$env:PATH"
+          $env:GST_PLUGIN_PATH = "$gstRoot\lib\gstreamer-1.0"
+          $env:GST_PLUGIN_PATH_1_0 = $env:GST_PLUGIN_PATH
+          $env:GST_REGISTRY_1_0 = Join-Path $env:RUNNER_TEMP 'airplay-pruned-gstreamer-registry.bin'
+          $elements = @(
+            'appsrc', 'appsink', 'h264parse', 'avdec_h264', 'videoconvert',
+            'avdec_alac', 'avdec_aac', 'audioconvert', 'audioresample',
+            'volume', 'autoaudiosink', 'wasapisink', 'wasapi2sink'
+          )
+          foreach ($element in $elements) {
+            $inspection = & "$gstRoot\bin\gst-inspect-1.0.exe" $element 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              throw "GStreamer element '$element' failed to load: $($inspection -join [Environment]::NewLine)"
+            }
+          }
+      - name: Verify app image
+        shell: pwsh
+        run: |
+          $appImage = '.\player\app\build\package\staged-image\AirPlay Receiver\AirPlay Receiver.exe'
+          $selfTest = Start-Process -FilePath $appImage -Wait -PassThru -ArgumentList '--self-test'
+          if ($selfTest.ExitCode -ne 0) { throw "app-image self-test failed with exit code $($selfTest.ExitCode)" }
+      - name: Build previous-version upgrade fixture
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          # Use a synthetic pre-release fixture to exercise upgrades within this
+          # independent product line without comparing it to the legacy installer.
+          $fixtureVersion = '0.9.0'
+          .\gradlew.bat "-PappVersion=$fixtureVersion" :player:app:packageWindows --console=plain
+          if ($LASTEXITCODE -ne 0) { throw "Upgrade fixture packaging failed with exit code $LASTEXITCODE" }
+          $fixtures = @(Get-ChildItem '.\player\app\build\package\installer\*.exe')
+          if ($fixtures.Count -ne 1) { throw "Expected one upgrade fixture, found $($fixtures.Count)" }
+          $fixtureMsis = @(Get-ChildItem `
+            '.\player\app\build\package\installer-temp\images\win-exe.image\*.msi')
+          if ($fixtureMsis.Count -ne 1) {
+            throw "Expected one retained upgrade fixture MSI, found $($fixtureMsis.Count)"
+          }
+          Copy-Item $fixtureMsis[0].FullName `
+            (Join-Path $env:RUNNER_TEMP 'airplay-previous-version.msi')
+          "Previous-version upgrade fixture: $fixtureVersion" | Write-Host
+      - name: Build Windows installer
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          .\gradlew.bat :player:app:signWindowsPackage --console=plain
+          if ($LASTEXITCODE -ne 0) { throw "Gradle packaging failed with exit code $LASTEXITCODE" }
+      - name: Verify live previous-version upgrade
+        if: github.event_name != 'pull_request'
+        timeout-minutes: 8
+        shell: pwsh
+        run: |
+          . .\.github\scripts\InstallerTestHelpers.ps1
+          $fixture = Join-Path $env:RUNNER_TEMP 'airplay-previous-version.msi'
+          $installers = @(Get-ChildItem '.\player\app\build\package\installer\*.exe')
+          if ($installers.Count -ne 1) { throw "Expected one Windows installer, found $($installers.Count)" }
+          $installer = $installers[0]
+          $testInstallers = @(Get-ChildItem `
+            '.\player\app\build\package\installer-temp\images\win-exe.image\*.msi')
+          if ($testInstallers.Count -ne 1) {
+            throw "Expected one retained current MSI, found $($testInstallers.Count)"
+          }
+          $testInstaller = $testInstallers[0]
+          "AIRPLAY_TEST_MSI=$($testInstaller.FullName)" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
+          "Windows installer: $([math]::Round($installer.Length / 1MB, 1)) MiB" | Write-Host
+          if ($installer.Length -gt 300MB) { throw 'Windows installer exceeded the 300 MiB packaging limit' }
+
+          $customInstallDir = Join-Path $env:LOCALAPPDATA 'AirPlay Receiver for Windows Upgrade Test'
+          $fixtureLog = Join-Path $env:RUNNER_TEMP 'airplay-previous-install.log'
+          $installArguments = @(
+            '/qn'
+            '/i'
+            $fixture
+            'REBOOT=ReallySuppress'
+            '/l*vx!'
+            $fixtureLog
+            "INSTALLDIR=$customInstallDir"
+          )
+          Invoke-AirPlayInstallerProcess `
+            -FilePath 'msiexec.exe' `
+            -Arguments $installArguments `
+            -LogPath $fixtureLog `
+            -TimeoutSeconds 180
+
+          $installedApp = Join-Path $customInstallDir 'AirPlay Receiver.exe'
+          if (!(Test-Path $installedApp)) {
+            throw "Previous-version fixture ignored custom install directory '$customInstallDir'"
+          }
+          "AIRPLAY_TEST_INSTALL_DIR=$customInstallDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'AirPlay Receiver.lnk'
+          $startMenuShortcut = Join-Path $env:APPDATA `
+            'Microsoft\Windows\Start Menu\Programs\AirPlay Receiver for Windows\AirPlay Receiver.lnk'
+          if (!(Test-Path $desktopShortcut) -or !(Test-Path $startMenuShortcut)) {
+            throw 'A fresh silent installation did not create both default shortcuts'
+          }
+
+          # Simulate the wizard choice made by an existing user: keep the Start
+          # menu entry, but do not recreate a desktop shortcut during upgrades.
+          $preferenceKey = 'HKCU:\Software\qiuspace\AirPlay Receiver for Windows\Installer'
+          New-Item -Path $preferenceKey -Force | Out-Null
+          Set-ItemProperty -Path $preferenceKey -Name InstallDir -Value $customInstallDir
+          Set-ItemProperty -Path $preferenceKey -Name DesktopShortcut -Value 'no'
+          Set-ItemProperty -Path $preferenceKey -Name StartMenuShortcut -Value 'yes'
+          Remove-Item -LiteralPath $desktopShortcut -Force -ErrorAction SilentlyContinue
+
+          function Get-AirPlayProcesses {
+            @(Get-CimInstance Win32_Process -Filter "Name='AirPlay Receiver.exe'" |
+              Where-Object { $_.ExecutablePath -eq $installedApp })
+          }
+          function Wait-ForAirPlayWindow {
+            $deadline = [DateTime]::UtcNow.AddSeconds(30)
+            do {
+              foreach ($candidate in Get-AirPlayProcesses) {
+                $process = Get-Process -Id $candidate.ProcessId -ErrorAction SilentlyContinue
+                if ($process -and $process.MainWindowHandle -ne 0) {
+                  return $candidate.ProcessId
+                }
+              }
+              Start-Sleep -Milliseconds 250
+            } while ([DateTime]::UtcNow -lt $deadline)
+            throw 'The previous-version application did not create its main window'
+          }
+
+          Start-Process -FilePath $installedApp | Out-Null
+          $windowProcessId = Wait-ForAirPlayWindow
+          Start-Sleep -Seconds 3
+          $windowProcess = Get-Process -Id $windowProcessId -ErrorAction SilentlyContinue
+          if (!$windowProcess -or $windowProcess.MainWindowHandle -eq 0) {
+            throw 'The previous-version application was not still running before the upgrade'
+          }
+
+          $upgradeLog = Join-Path $env:RUNNER_TEMP 'airplay-major-upgrade.log'
+          $arguments = @(
+            '/qn'
+            '/i'
+            $testInstaller.FullName
+            'MSIRESTARTMANAGERCONTROL=Disable'
+            'REBOOT=ReallySuppress'
+            '/l*vx!'
+            $upgradeLog
+          )
+          Invoke-AirPlayInstallerProcess `
+            -FilePath 'msiexec.exe' `
+            -Arguments $arguments `
+            -LogPath $upgradeLog `
+            -TimeoutSeconds 180
+          if (@(Get-AirPlayProcesses).Count -ne 0) {
+            throw 'The previous-version process remained after the major upgrade'
+          }
+          if (!(Test-Path $installedApp)) {
+            throw 'The major upgrade did not preserve the custom installation directory'
+          }
+          $defaultApp = Join-Path $env:LOCALAPPDATA 'AirPlay Receiver for Windows App\AirPlay Receiver.exe'
+          if (Test-Path $defaultApp) {
+            throw 'The major upgrade unexpectedly returned to the default installation directory'
+          }
+          if (Test-Path $desktopShortcut) {
+            throw 'The major upgrade recreated a desktop shortcut that the user disabled'
+          }
+          if (!(Test-Path $startMenuShortcut)) {
+            throw 'The major upgrade did not preserve the enabled Start menu shortcut'
+          }
+          $savedPreferences = Get-ItemProperty -Path $preferenceKey
+          $savedInstallDir = $savedPreferences.InstallDir.TrimEnd('\')
+          $expectedInstallDir = $customInstallDir.TrimEnd('\')
+          if ($savedInstallDir -ne $expectedInstallDir -or
+              $savedPreferences.DesktopShortcut -ne 'no' -or
+              $savedPreferences.StartMenuShortcut -ne 'yes') {
+            throw 'The major upgrade did not preserve installer preferences'
+          }
+          $upgradeText = Get-Content $upgradeLog -Raw
+          if ($upgradeText -notmatch 'WixCloseApplications' -or
+              $upgradeText -notmatch 'RemoveExistingProducts' -or
+              $upgradeText -notmatch 'MSIRESTARTMANAGERCONTROL.+Disable') {
+            throw 'The major-upgrade log did not prove early application close and old-product removal'
+          }
+
+          $versionMatch = Select-String -Path '.\build.gradle' -Pattern "^\s*version\s*=\s*'([^']+)'\s*$"
+          $expectedVersion = $versionMatch.Matches[0].Groups[1].Value
+          $expectedDisplayName = "AirPlay Receiver $expectedVersion"
+          $uninstallRoots = @(
+            'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+            'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+            'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+          )
+          $installedEntry = $uninstallRoots |
+            Where-Object { Test-Path $_ } |
+            ForEach-Object { Get-ChildItem $_ | Get-ItemProperty } |
+            Where-Object {
+              $_.PSObject.Properties['DisplayName'] -and
+                $_.DisplayName -eq $expectedDisplayName
+            } |
+            Select-Object -First 1
+          if (!$installedEntry) {
+            $airPlayEntries = $uninstallRoots |
+              Where-Object { Test-Path $_ } |
+              ForEach-Object { Get-ChildItem $_ | Get-ItemProperty } |
+              Where-Object {
+                $_.PSObject.Properties['DisplayName'] -and
+                  $_.DisplayName -like '*AirPlay*'
+              } |
+              ForEach-Object {
+                $displayVersion = if ($_.PSObject.Properties['DisplayVersion']) {
+                  $_.DisplayVersion
+                } else {
+                  '?'
+                }
+                "$($_.DisplayName) [$displayVersion]"
+              }
+            $actualEntries = $airPlayEntries -join '; '
+            Write-Host "::error title=Control Panel name mismatch::Expected '$expectedDisplayName'; found '$actualEntries'"
+            throw "Control Panel entry '$expectedDisplayName' was not registered"
+          }
+          if ($installedEntry.DisplayVersion -ne $expectedVersion) {
+            throw "Unexpected installed version: $($installedEntry.DisplayVersion)"
+          }
+      - name: Verify overwrite while the application is running
+        if: github.event_name != 'pull_request'
+        timeout-minutes: 8
+        shell: pwsh
+        run: |
+          . .\.github\scripts\InstallerTestHelpers.ps1
+          $installedApp = Join-Path $env:AIRPLAY_TEST_INSTALL_DIR 'AirPlay Receiver.exe'
+          $testInstaller = Get-Item $env:AIRPLAY_TEST_MSI
+
+          function Get-AirPlayProcesses {
+            @(Get-CimInstance Win32_Process -Filter "Name='AirPlay Receiver.exe'" |
+              Where-Object { $_.ExecutablePath -eq $installedApp })
+          }
+
+          function Wait-ForAirPlayWindow {
+            $deadline = [DateTime]::UtcNow.AddSeconds(30)
+            do {
+              foreach ($candidate in Get-AirPlayProcesses) {
+                $process = Get-Process -Id $candidate.ProcessId -ErrorAction SilentlyContinue
+                if ($process -and $process.MainWindowHandle -ne 0) {
+                  return $candidate.ProcessId
+                }
+              }
+              Start-Sleep -Milliseconds 250
+            } while ([DateTime]::UtcNow -lt $deadline)
+            throw 'The installed application did not create its main window'
+          }
+
+          function Wait-ForWindowlessHold {
+            $deadline = [DateTime]::UtcNow.AddSeconds(30)
+            do {
+              $holders = @(Get-AirPlayProcesses |
+                Where-Object { $_.CommandLine -like '*--installer-test-hold*' })
+              if ($holders.Count -gt 0) {
+                $hasWindow = $holders | Where-Object {
+                  (Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue).MainWindowHandle -ne 0
+                }
+                if (!$hasWindow) { return @($holders.ProcessId) }
+              }
+              Start-Sleep -Milliseconds 250
+            } while ([DateTime]::UtcNow -lt $deadline)
+            throw 'The packaged windowless installer-test process did not remain running'
+          }
+
+          function Invoke-Overwrite([string] $log) {
+            $arguments = @(
+              '/qn'
+              '/i'
+              $testInstaller.FullName
+              'REINSTALL=ALL'
+              'REINSTALLMODE=amus'
+              'REBOOT=ReallySuppress'
+              'MSIRESTARTMANAGERCONTROL=Disable'
+              '/l*vx!'
+              $log
+            )
+            Invoke-AirPlayInstallerProcess `
+              -FilePath 'msiexec.exe' `
+              -Arguments $arguments `
+              -LogPath $log `
+              -TimeoutSeconds 180
+            Start-Sleep -Seconds 2
+            if (@(Get-AirPlayProcesses).Count -ne 0) {
+              throw 'AirPlay Receiver remained running after the overwrite'
+            }
+            $logText = Get-Content $log -Raw
+            if ($logText -notmatch 'WixCloseApplications') {
+              throw 'The overwrite log did not contain WixCloseApplications'
+            }
+            if ($logText -notmatch 'MSIRESTARTMANAGERCONTROL.+Disable') {
+              throw 'The overwrite log did not prove Restart Manager was disabled'
+            }
+          }
+
+          try {
+            # First prove that the early EndSession action closes the real Swing/tray
+            # application without any help from Windows Restart Manager.
+            Start-Process -FilePath $installedApp | Out-Null
+            $windowProcessId = Wait-ForAirPlayWindow
+            Start-Sleep -Seconds 3
+            $windowProcess = Get-Process -Id $windowProcessId -ErrorAction SilentlyContinue
+            if (!$windowProcess -or $windowProcess.MainWindowHandle -eq 0) {
+              throw 'The installed application was not still running before the graceful overwrite'
+            }
+            Invoke-Overwrite `
+              (Join-Path $env:RUNNER_TEMP 'airplay-overwrite-graceful.log')
+
+            # Then hold the packaged JVM without creating an HWND. The graceful
+            # action waits up to 15 seconds before the windowless fallback ends it.
+            $env:AIRPLAY_RECEIVER_INSTALLER_TEST = '1'
+            Start-Process -FilePath $installedApp -ArgumentList '--installer-test-hold' | Out-Null
+            Remove-Item Env:AIRPLAY_RECEIVER_INSTALLER_TEST
+            $holderIds = @(Wait-ForWindowlessHold)
+            Start-Sleep -Seconds 2
+            $remainingHolders = @(Get-AirPlayProcesses |
+              Where-Object { $_.ProcessId -in $holderIds })
+            if ($remainingHolders.Count -eq 0) {
+              throw 'The windowless installer-test process exited before overwrite'
+            }
+            Invoke-Overwrite `
+              (Join-Path $env:RUNNER_TEMP 'airplay-overwrite-windowless.log')
+
+            $sessionManager = Get-ItemProperty `
+              'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' `
+              -Name PendingFileRenameOperations `
+              -ErrorAction SilentlyContinue
+            $pending = if ($sessionManager -and
+                $sessionManager.PSObject.Properties['PendingFileRenameOperations']) {
+              @($sessionManager.PendingFileRenameOperations)
+            } else {
+              @()
+            }
+            if ($pending | Where-Object { $_ -like '*AirPlay Receiver for Windows Upgrade Test*' }) {
+              throw 'Overwrite deferred AirPlay Receiver files until reboot'
+            }
+          } finally {
+            Remove-Item Env:AIRPLAY_RECEIVER_INSTALLER_TEST -ErrorAction SilentlyContinue
+            Get-AirPlayProcesses | ForEach-Object {
+              Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+          }
+      - name: Verify installed application
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          $installedApp = Join-Path $env:AIRPLAY_TEST_INSTALL_DIR 'AirPlay Receiver.exe'
+          if (!(Test-Path $installedApp)) { throw "Installed application not found at $installedApp" }
+          $installedSelfTest = Start-Process -FilePath $installedApp -Wait -PassThru -ArgumentList '--self-test'
+          if ($installedSelfTest.ExitCode -ne 0) { throw "Installed self-test failed with exit code $($installedSelfTest.ExitCode)" }
+      - name: Verify default data retention and explicit full uninstall cleanup
+        if: github.event_name != 'pull_request'
+        timeout-minutes: 8
+        shell: pwsh
+        run: |
+          . .\.github\scripts\InstallerTestHelpers.ps1
+          . .\.github\scripts\InteractiveUninstallTest.ps1
+          $settingsDir = Join-Path $env:APPDATA 'AirPlay Receiver for Windows'
+          $localDataDir = Join-Path $env:LOCALAPPDATA 'AirPlay Receiver for Windows'
+          $logsDir = Join-Path $localDataDir 'logs'
+          $installedApp = Join-Path $env:AIRPLAY_TEST_INSTALL_DIR 'AirPlay Receiver.exe'
+          $desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'AirPlay Receiver.lnk'
+          $startMenuShortcut = Join-Path $env:APPDATA `
+            'Microsoft\Windows\Start Menu\Programs\AirPlay Receiver for Windows\AirPlay Receiver.lnk'
+          $applicationKey = 'HKCU:\Software\qiuspace\AirPlay Receiver for Windows'
+          $preferenceKey = Join-Path $applicationKey 'Installer'
+          $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+          $appListBackupTestKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\AppListBackup\ListOfEventDrivenBackedUpTiles_2985546748'
+          $postCleanupScript = Join-Path $env:TEMP 'AirPlayReceiver-UninstallCleanup.ps1'
+
+          function Get-AirPlayUninstallEntry {
+            $uninstallRoots = @(
+              'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+              'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+              'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+            )
+            $versionMatch = Select-String `
+              -Path '.\build.gradle' `
+              -Pattern "^\s*version\s*=\s*'([^']+)'\s*$"
+            $expectedName = "AirPlay Receiver $($versionMatch.Matches[0].Groups[1].Value)"
+            $entry = $uninstallRoots |
+              Where-Object { Test-Path $_ } |
+              ForEach-Object { Get-ChildItem $_ | Get-ItemProperty } |
+              Where-Object {
+                $_.PSObject.Properties['DisplayName'] -and
+                  $_.DisplayName -eq $expectedName
+              } |
+              Select-Object -First 1
+            if (!$entry) {
+              throw "Unable to locate uninstall entry '$expectedName'"
+            }
+            $entry
+          }
+
+          function Test-AirPlayRunValue {
+            $properties = Get-ItemProperty -Path $runKey -ErrorAction SilentlyContinue
+            $properties -and
+              ($properties.PSObject.Properties.Name -contains 'AirPlay Receiver')
+          }
+
+          function Wait-ForInstallerHold {
+            $deadline = [DateTime]::UtcNow.AddSeconds(30)
+            do {
+              $holder = Get-CimInstance Win32_Process -Filter "Name='AirPlay Receiver.exe'" |
+                Where-Object {
+                  $_.ExecutablePath -eq $installedApp -and
+                  $_.CommandLine -like '*--installer-test-hold*'
+                } |
+                Select-Object -First 1
+              if ($holder) { return }
+              Start-Sleep -Milliseconds 250
+            } while ([DateTime]::UtcNow -lt $deadline)
+            throw 'The uninstall test process did not remain running'
+          }
+
+          New-Item -ItemType Directory -Path $settingsDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $settingsDir 'settings.json') -Value '{}'
+          Set-Content -LiteralPath (Join-Path $settingsDir 'settings.corrupt-test.json') -Value '{broken'
+          Set-Content -LiteralPath (Join-Path $logsDir 'receiver.log') -Value 'delete'
+          if (!(Test-Path $preferenceKey)) {
+            throw 'Installer preferences disappeared before the uninstall test'
+          }
+          $uninstallPreferences = Get-ItemProperty -Path $preferenceKey
+          if ($uninstallPreferences.InstallDir.TrimEnd('\') -ne
+              ($env:AIRPLAY_TEST_INSTALL_DIR).TrimEnd('\')) {
+            throw 'Installer preferences no longer contain the custom installation directory'
+          }
+          Set-ItemProperty -Path $applicationKey -Name CleanupSentinel -Value 'delete'
+          Set-ItemProperty -Path $runKey -Name 'AirPlay Receiver' -Value "`"$installedApp`""
+          New-Item -Path $appListBackupTestKey -Force | Out-Null
+          Set-ItemProperty -Path $appListBackupTestKey `
+            -Name 'ListOfEventDrivenBackedUpTiles_2985546748' -Value `
+            "{`"tileId`":`"W~$installedApp`",`"appIconLightAssetId`":`"`",`"appIconDarkAssetId`":`"`",`"displayName`":`"`",`"sortName`":`"`",`"suiteName`":`"`",`"packageId`":`"`",`"action`":`"2`",`"shortcutArgs`":`"`",`"targetPath`":`"`"}"
+
+          $env:AIRPLAY_RECEIVER_INSTALLER_TEST = '1'
+          Start-Process -FilePath $installedApp -ArgumentList '--installer-test-hold' | Out-Null
+          Remove-Item Env:AIRPLAY_RECEIVER_INSTALLER_TEST
+          Wait-ForInstallerHold
+
+          # Reproduce Explorer writing AppListBackup again after RemoveFiles.
+          # The post-finalize cleanup must catch this delayed shell-cache entry.
+          $shellCacheRace = Start-Job -ArgumentList $installedApp, $appListBackupTestKey -ScriptBlock {
+            param($application, $cacheKey)
+            $deadline = [DateTime]::UtcNow.AddSeconds(60)
+            while ((Test-Path -LiteralPath $application) -and
+                   [DateTime]::UtcNow -lt $deadline) {
+              Start-Sleep -Milliseconds 50
+            }
+            if (Test-Path -LiteralPath $application) {
+              throw 'Application files were not removed before the shell-cache deadline'
+            }
+            New-Item -Path $cacheKey -Force | Out-Null
+            $name = Split-Path -Leaf $cacheKey
+            Set-ItemProperty -Path $cacheKey -Name $name -Value `
+              "{`"tileId`":`"W~$application`",`"action`":`"2`"}"
+            'recreated-after-remove-files'
+          }
+
+          $entry = Get-AirPlayUninstallEntry
+          $defaultUninstallLog = Join-Path $env:RUNNER_TEMP 'airplay-uninstall-default-retain.log'
+          # GitHub-hosted Windows runners do not expose an interactive desktop to
+          # EnumWindows. Validate the application-owned maintenance command and
+          # final MSI dialog/event graph, then exercise that ProductCode silently.
+          Assert-AirPlayControlPanelUninstallDefinition `
+            -UninstallString $entry.UninstallString `
+            -MsiPath $env:AIRPLAY_TEST_MSI
+          Invoke-AirPlayInstallerProcess `
+            -FilePath 'msiexec.exe' `
+            -Arguments @(
+              '/qn'
+              '/x'
+              $entry.PSChildName
+              'REBOOT=ReallySuppress'
+              '/l*vx!'
+              $defaultUninstallLog
+            ) `
+            -LogPath $defaultUninstallLog `
+            -TimeoutSeconds 180
+
+          $raceResult = Wait-Job -Job $shellCacheRace -Timeout 10 | Receive-Job
+          Remove-Job -Job $shellCacheRace -Force
+          if ($raceResult -notcontains 'recreated-after-remove-files') {
+            throw 'The test did not reproduce the delayed AppListBackup write'
+          }
+
+          if (Test-Path $env:AIRPLAY_TEST_INSTALL_DIR) {
+            Get-ChildItem -LiteralPath $env:AIRPLAY_TEST_INSTALL_DIR -Force -Recurse |
+              Select-Object -First 100 FullName, Length, Attributes |
+              Format-Table -AutoSize |
+              Out-String |
+              Write-Host
+            throw 'Uninstall left the application installation directory behind'
+          }
+          if (!(Test-Path (Join-Path $settingsDir 'settings.json')) -or
+              !(Test-Path (Join-Path $logsDir 'receiver.log'))) {
+            throw 'Default uninstall did not retain settings and logs'
+          }
+          if ((Test-Path $applicationKey) -or (Test-AirPlayRunValue)) {
+            throw 'Default uninstall left application registry state behind'
+          }
+          if (Test-Path $appListBackupTestKey) {
+            throw 'Default uninstall left its Windows AppListBackup tile cache behind'
+          }
+          if (Test-Path $postCleanupScript) {
+            throw 'Default uninstall left its post-cleanup script behind'
+          }
+          if (Test-Path $entry.PSPath) {
+            throw 'Default uninstall left its Control Panel entry behind'
+          }
+          if (Test-Path 'HKCU:\Software\qiuspace') {
+            throw 'Default uninstall left an empty application registry parent behind'
+          }
+          if ((Test-Path $desktopShortcut) -or (Test-Path $startMenuShortcut)) {
+            throw 'Default uninstall left shortcuts behind'
+          }
+          if (Get-CimInstance Win32_Process -Filter "Name='AirPlay Receiver.exe'") {
+            throw 'Default uninstall left an AirPlay Receiver process behind'
+          }
+
+          $testInstaller = Get-Item $env:AIRPLAY_TEST_MSI
+          $fullCleanupInstallLog = Join-Path $env:RUNNER_TEMP 'airplay-full-cleanup-install.log'
+          Invoke-AirPlayInstallerProcess `
+            -FilePath 'msiexec.exe' `
+            -Arguments @(
+              '/qn'
+              '/i'
+              $testInstaller.FullName
+              'REBOOT=ReallySuppress'
+              '/l*vx!'
+              $fullCleanupInstallLog
+              "INSTALLDIR=$env:AIRPLAY_TEST_INSTALL_DIR"
+            ) `
+            -LogPath $fullCleanupInstallLog `
+            -TimeoutSeconds 180
+
+          New-Item -ItemType Directory -Path $settingsDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
+          $settingsSentinel = Join-Path $settingsDir 'installer-cleanup-test.txt'
+          $logsSentinel = Join-Path $logsDir 'installer-cleanup-test.txt'
+          Set-Content -LiteralPath $settingsSentinel -Value 'delete'
+          Set-Content -LiteralPath $logsSentinel -Value 'delete'
+          Set-ItemProperty -Path $runKey -Name 'AirPlay Receiver' -Value "`"$installedApp`""
+
+          $entry = Get-AirPlayUninstallEntry
+          $fullCleanupUninstallLog = Join-Path $env:RUNNER_TEMP 'airplay-uninstall-full-cleanup.log'
+          Invoke-AirPlayInstallerProcess `
+            -FilePath 'msiexec.exe' `
+            -Arguments @(
+              '/qn'
+              '/x'
+              $entry.PSChildName
+              'REBOOT=ReallySuppress'
+              'AIRPLAY_REMOVE_USER_DATA=1'
+              '/l*vx!'
+              $fullCleanupUninstallLog
+            ) `
+            -LogPath $fullCleanupUninstallLog `
+            -TimeoutSeconds 180
+
+          if (Test-Path $env:AIRPLAY_TEST_INSTALL_DIR) {
+            Get-ChildItem -LiteralPath $env:AIRPLAY_TEST_INSTALL_DIR -Force -Recurse |
+              Select-Object -First 100 FullName, Length, Attributes |
+              Format-Table -AutoSize |
+              Out-String |
+              Write-Host
+            throw 'Full-cleanup uninstall left the application installation directory behind'
+          }
+          if ((Test-Path $applicationKey) -or (Test-AirPlayRunValue)) {
+            throw 'Full-cleanup uninstall left application registry state behind'
+          }
+          if (Test-Path $entry.PSPath) {
+            throw 'Full-cleanup uninstall left its Control Panel entry behind'
+          }
+          if ((Test-Path $desktopShortcut) -or (Test-Path $startMenuShortcut)) {
+            throw 'Full-cleanup uninstall left shortcuts behind'
+          }
+          if ((Test-Path $settingsDir) -or (Test-Path $localDataDir)) {
+            throw 'AIRPLAY_REMOVE_USER_DATA=1 did not remove settings and logs'
+          }
+          if (Test-Path $postCleanupScript) {
+            throw 'Full-cleanup uninstall left its post-cleanup script behind'
+          }
+
+          $sessionManager = Get-ItemProperty `
+            'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' `
+            -Name PendingFileRenameOperations `
+            -ErrorAction SilentlyContinue
+          $pending = if ($sessionManager -and
+              $sessionManager.PSObject.Properties['PendingFileRenameOperations']) {
+            @($sessionManager.PendingFileRenameOperations)
+          } else {
+            @()
+          }
+          if ($pending | Where-Object { $_ -like '*AirPlay Receiver for Windows Upgrade Test*' }) {
+            throw 'Uninstall deferred AirPlay Receiver files until reboot'
+          }
+          Remove-Item -LiteralPath $settingsDir -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $localDataDir -Recurse -Force -ErrorAction SilentlyContinue
+      - name: Upload installer diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: airplay-installer-logs
+          path: |
+            ${{ runner.temp }}\airplay-previous-install.log
+            ${{ runner.temp }}\airplay-major-upgrade.log
+            ${{ runner.temp }}\airplay-overwrite-*.log
+            ${{ runner.temp }}\airplay-*-install.log
+            ${{ runner.temp }}\airplay-uninstall-*.log
+          if-no-files-found: ignore
+      - name: Upload Windows installer
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v7
+        with:
+          name: airplay-receiver-windows-installer
+          path: .\player\app\build\package\installer\*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - test
+      - windows-package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows installer
+        uses: actions/download-artifact@v7
+        with:
+          name: airplay-receiver-windows-installer
+          path: release
+      - name: Publish Windows installer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          expected_name="AirPlay-Receiver-${version}-windows-x64-setup.exe"
+          mapfile -t installers < <(find release -type f -name '*.exe' -print)
+          if [[ "${#installers[@]}" -ne 1 ]]; then
+            printf 'Expected one installer, found %s\n' "${#installers[@]}" >&2
+            printf '%s\n' "${installers[@]}" >&2
+            exit 1
+          fi
+          actual_name="$(basename "${installers[0]}")"
+          if [[ "$actual_name" != "$expected_name" ]]; then
+            printf 'Expected installer %s, found %s\n' "$expected_name" "$actual_name" >&2
+            exit 1
+          fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${installers[0]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${installers[0]}" \
+              --verify-tag \
+              --title "AirPlay Receiver $version" \
+              --generate-notes
+          fi

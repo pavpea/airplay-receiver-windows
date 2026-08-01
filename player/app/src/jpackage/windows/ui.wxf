@@ -1,0 +1,291 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+  <Fragment>
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR"/>
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.JpLicenseRtf)"/>
+
+    <UI Id="JpUI">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8"/>
+      <TextStyle Id="WixUI_Font_Small" FaceName="Tahoma" Size="7"/>
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12"/>
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes"/>
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal"/>
+      <Property Id="WixUI_Mode" Value="InstallDir"/>
+      <Property Id="ARPNOMODIFY" Value="1"/>
+
+      <DialogRef Id="BrowseDlg"/>
+      <DialogRef Id="DiskCostDlg"/>
+      <DialogRef Id="ErrorDlg"/>
+      <DialogRef Id="FatalError"/>
+      <DialogRef Id="FilesInUse"/>
+      <DialogRef Id="MsiRMFilesInUse"/>
+      <DialogRef Id="PrepareDlg"/>
+      <DialogRef Id="ProgressDlg"/>
+      <DialogRef Id="ResumeDlg"/>
+      <DialogRef Id="UserExit"/>
+      <DialogRef Id="InstallDirNotEmptyDlg"/>
+
+      <Publish Dialog="BrowseDlg" Control="OK" Event="DoAction"
+               Value="WixUIValidatePath" Order="3">1</Publish>
+      <Publish Dialog="BrowseDlg" Control="OK" Event="SpawnDialog"
+               Value="InvalidDirDlg" Order="4">
+        NOT WIXUI_DONTVALIDATEPATH AND WIXUI_INSTALLDIR_VALID&lt;&gt;"1"
+      </Publish>
+      <Publish Dialog="AirPlayExitDialog" Control="Finish" Event="EndDialog"
+               Value="Return" Order="999">1</Publish>
+
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog"
+               Value="LicenseAgreementDlg">NOT Installed</Publish>
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog"
+               Value="VerifyReadyDlg">Installed AND PATCH</Publish>
+      <Publish Dialog="LicenseAgreementDlg" Control="Back" Event="NewDialog"
+               Value="WelcomeDlg">1</Publish>
+      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog"
+               Value="InstallDirDlg">LicenseAccepted="1"</Publish>
+
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog"
+               Value="LicenseAgreementDlg">1</Publish>
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="SetTargetPath"
+               Value="[WIXUI_INSTALLDIR]" Order="1">1</Publish>
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="DoAction"
+               Value="WixUIValidatePath" Order="2">NOT WIXUI_DONTVALIDATEPATH</Publish>
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="SpawnDialog"
+               Value="InvalidDirDlg" Order="4">
+        NOT WIXUI_DONTVALIDATEPATH AND WIXUI_INSTALLDIR_VALID&lt;&gt;"1"
+      </Publish>
+      <Publish Dialog="InstallDirDlg" Control="ChangeFolder" Property="_BrowseProperty"
+               Value="[WIXUI_INSTALLDIR]" Order="1">1</Publish>
+      <Publish Dialog="InstallDirDlg" Control="ChangeFolder" Event="SpawnDialog"
+               Value="BrowseDlg" Order="2">1</Publish>
+
+      <Publish Dialog="ShortcutPromptDlg" Control="Back" Event="NewDialog"
+               Value="InstallDirDlg">1</Publish>
+      <Publish Dialog="ShortcutPromptDlg" Control="Next" Event="DoAction"
+               Value="AirPlayResetRunningStatus" Order="2">1</Publish>
+      <Publish Dialog="ShortcutPromptDlg" Control="Next" Event="DoAction"
+               Value="AirPlayResetCloseAllowed" Order="3">1</Publish>
+      <Publish Dialog="ShortcutPromptDlg" Control="Next" Property="AIRPLAY_CHECK_RUNNING"
+               Value="1" Order="4">1</Publish>
+      <Publish Dialog="ShortcutPromptDlg" Control="Next" Event="DoAction"
+               Value="WixCloseApplications" Order="5">1</Publish>
+      <Publish Dialog="ShortcutPromptDlg" Control="Next" Event="SpawnDialog"
+               Value="AirPlayRunningDlg" Order="6">AIRPLAY_APP_RUNNING</Publish>
+      <Publish Dialog="ShortcutPromptDlg" Control="Next" Property="AIRPLAY_CLOSE_ALLOWED"
+               Value="1" Order="7">NOT AIRPLAY_APP_RUNNING</Publish>
+      <Publish Dialog="ShortcutPromptDlg" Control="Next" Event="DoAction"
+               Value="AirPlayResetRunningCheck" Order="8">1</Publish>
+      <Publish Dialog="ShortcutPromptDlg" Control="Next" Event="NewDialog"
+               Value="VerifyReadyDlg" Order="9">AIRPLAY_CLOSE_ALLOWED=1</Publish>
+
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog"
+               Value="ShortcutPromptDlg" Order="1">NOT Installed</Publish>
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog"
+               Value="AirPlayUninstallOptionsDlg" Order="2">
+        Installed AND NOT PATCH AND WixUI_InstallMode="Remove"
+      </Publish>
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog"
+               Value="AirPlayMaintenanceTypeDlg" Order="3">
+        Installed AND NOT PATCH AND WixUI_InstallMode&lt;&gt;"Remove"
+      </Publish>
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog"
+               Value="WelcomeDlg" Order="4">Installed AND PATCH</Publish>
+
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog"
+               Value="AirPlayMaintenanceTypeDlg">1</Publish>
+      <Publish Dialog="AirPlayMaintenanceTypeDlg" Control="RepairButton" Event="DoAction"
+               Value="AirPlayResetRunningStatus" Order="2">1</Publish>
+      <Publish Dialog="AirPlayMaintenanceTypeDlg" Control="RepairButton" Event="DoAction"
+               Value="AirPlayResetCloseAllowed" Order="3">1</Publish>
+      <Publish Dialog="AirPlayMaintenanceTypeDlg" Control="RepairButton"
+               Property="AIRPLAY_CHECK_RUNNING" Value="1" Order="4">1</Publish>
+      <Publish Dialog="AirPlayMaintenanceTypeDlg" Control="RepairButton" Event="DoAction"
+               Value="WixCloseApplications" Order="5">1</Publish>
+      <Publish Dialog="AirPlayMaintenanceTypeDlg" Control="RepairButton" Event="SpawnDialog"
+               Value="AirPlayRunningDlg" Order="6">AIRPLAY_APP_RUNNING</Publish>
+      <Publish Dialog="AirPlayMaintenanceTypeDlg" Control="RepairButton"
+               Property="AIRPLAY_CLOSE_ALLOWED" Value="1" Order="7">
+        NOT AIRPLAY_APP_RUNNING
+      </Publish>
+      <Publish Dialog="AirPlayMaintenanceTypeDlg" Control="RepairButton" Event="DoAction"
+               Value="AirPlayResetRunningCheck" Order="8">1</Publish>
+      <Publish Dialog="AirPlayMaintenanceTypeDlg" Control="RepairButton" Event="NewDialog"
+               Value="VerifyReadyDlg" Order="9">AIRPLAY_CLOSE_ALLOWED=1</Publish>
+      <Publish Dialog="AirPlayMaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog"
+               Value="AirPlayUninstallOptionsDlg" Order="2">1</Publish>
+      <Publish Dialog="AirPlayMaintenanceTypeDlg" Control="Back" Event="NewDialog"
+               Value="MaintenanceWelcomeDlg">1</Publish>
+
+      <Publish Dialog="AirPlayUninstallOptionsDlg" Control="Back" Event="NewDialog"
+               Value="AirPlayMaintenanceTypeDlg">1</Publish>
+      <Publish Dialog="AirPlayUninstallOptionsDlg" Control="Next"
+               Property="WixUI_InstallMode" Value="Remove" Order="1">1</Publish>
+      <Publish Dialog="AirPlayUninstallOptionsDlg" Control="Next" Event="DoAction"
+               Value="AirPlayResetRunningStatus" Order="2">1</Publish>
+      <Publish Dialog="AirPlayUninstallOptionsDlg" Control="Next" Event="DoAction"
+               Value="AirPlayResetCloseAllowed" Order="3">1</Publish>
+      <Publish Dialog="AirPlayUninstallOptionsDlg" Control="Next"
+               Property="AIRPLAY_CHECK_RUNNING" Value="1" Order="4">1</Publish>
+      <Publish Dialog="AirPlayUninstallOptionsDlg" Control="Next" Event="DoAction"
+               Value="WixCloseApplications" Order="5">1</Publish>
+      <Publish Dialog="AirPlayUninstallOptionsDlg" Control="Next" Event="SpawnDialog"
+               Value="AirPlayRunningDlg" Order="6">AIRPLAY_APP_RUNNING</Publish>
+      <Publish Dialog="AirPlayUninstallOptionsDlg" Control="Next"
+               Property="AIRPLAY_CLOSE_ALLOWED" Value="1" Order="7">
+        NOT AIRPLAY_APP_RUNNING
+      </Publish>
+      <Publish Dialog="AirPlayUninstallOptionsDlg" Control="Next" Event="DoAction"
+               Value="AirPlayResetRunningCheck" Order="8">1</Publish>
+      <Publish Dialog="AirPlayUninstallOptionsDlg" Control="Next" Event="NewDialog"
+               Value="VerifyReadyDlg" Order="9">AIRPLAY_CLOSE_ALLOWED=1</Publish>
+    </UI>
+
+    <UI>
+      <Dialog Id="AirPlayMaintenanceTypeDlg" Width="370" Height="270"
+              Title="AirPlay Receiver 维护" NoMinimize="yes">
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15"
+                 Transparent="yes" NoPrefix="yes"
+                 Text="{\WixUI_Font_Title}修复或卸载"/>
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="20"
+                 Transparent="yes" NoPrefix="yes"
+                 Text="选择希望执行的操作。"/>
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44"
+                 TabSkip="no" Text="!(loc.MaintenanceTypeDlgBannerBitmap)"/>
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0"/>
+        <Control Id="RepairButton" Type="PushButton" X="40" Y="83"
+                 Width="80" Height="17" Default="yes" Text="修复(&amp;P)"/>
+        <Control Id="RepairText" Type="Text" X="60" Y="105" Width="280" Height="34"
+                 NoPrefix="yes"
+                 Text="修复丢失或损坏的程序文件、快捷方式和注册表项。"/>
+        <Control Id="RemoveButton" Type="PushButton" X="40" Y="157"
+                 Width="80" Height="17" Text="卸载(&amp;R)"/>
+        <Control Id="RemoveText" Type="Text" X="60" Y="179" Width="280" Height="30"
+                 NoPrefix="yes"
+                 Text="从计算机中卸载 AirPlay Receiver。"/>
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0"/>
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17"
+                 Text="!(loc.WixUIBack)"/>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17"
+                 Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+        </Control>
+      </Dialog>
+
+      <Dialog Id="AirPlayRunningDlg" Width="330" Height="118"
+              Title="AirPlay Receiver 正在运行" NoMinimize="yes">
+        <Control Id="Title" Type="Text" X="18" Y="14" Width="294" Height="18"
+                 Transparent="yes" NoPrefix="yes"
+                 Text="{\WixUI_Font_Title}需要先结束 AirPlay Receiver"/>
+        <Control Id="Message" Type="Text" X="18" Y="39" Width="294" Height="32"
+                 NoPrefix="yes"
+                 Text="检测到 AirPlay Receiver 正在运行。继续将结束当前投屏和应用进程；若 15 秒内未退出，将自动强制结束。"/>
+        <Control Id="Continue" Type="PushButton" X="133" Y="87" Width="112" Height="18"
+                 Default="yes" Text="结束程序并继续">
+          <Publish Property="AIRPLAY_CLOSE_ALLOWED" Value="1" Order="1">1</Publish>
+          <Publish Event="DoAction" Value="WixCloseApplications" Order="2">1</Publish>
+          <Publish Event="DoAction" Value="AirPlaySetForceCloseCommand" Order="3">1</Publish>
+          <Publish Event="DoAction" Value="AirPlayQuietForceClose" Order="4">1</Publish>
+          <Publish Event="DoAction" Value="AirPlayResetRunningCheck" Order="5">1</Publish>
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="6">1</Publish>
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="251" Y="87" Width="61" Height="18"
+                 Cancel="yes" Text="取消">
+          <Publish Event="EndDialog" Value="Exit">1</Publish>
+        </Control>
+      </Dialog>
+
+      <Dialog Id="AirPlayUninstallOptionsDlg" Width="370" Height="270"
+              Title="AirPlay Receiver 卸载选项" NoMinimize="yes">
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="310" Height="15"
+                 Transparent="yes" NoPrefix="yes"
+                 Text="{\WixUI_Font_Title}卸载选项"/>
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="300" Height="18"
+                 Transparent="yes" NoPrefix="yes"
+                 Text="选择是否同时删除此应用创建的个人数据。"/>
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44"
+                 TabSkip="no" Text="!(loc.VerifyReadyDlgBannerBitmap)"/>
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0"/>
+        <Control Id="RemoveUserData" Type="CheckBox" X="28" Y="87" Width="310" Height="20"
+                 Property="AIRPLAY_REMOVE_USER_DATA" CheckBoxValue="1"
+                 Text="彻底移除所有个人数据"/>
+        <Control Id="CleanupDescription" Type="Text" X="48" Y="111" Width="282" Height="28"
+                 NoPrefix="yes"
+                 Text="{\WixUI_Font_Small}如果您打算以后重新安装并继续使用，请不要勾选此项。"/>
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0"/>
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17"
+                 Text="!(loc.WixUIBack)"/>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17"
+                 Default="yes" Text="!(loc.WixUINext)"/>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17"
+                 Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+        </Control>
+      </Dialog>
+
+      <Dialog Id="AirPlayExitDialog" Width="370" Height="270"
+              Title="!(loc.ExitDialog_Title)">
+        <Control Id="Finish" Type="PushButton" X="236" Y="243" Width="56" Height="17"
+                 Default="yes" Cancel="yes" Text="!(loc.WixUIFinish)"/>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17"
+                 Disabled="yes" Text="!(loc.WixUICancel)"/>
+        <Control Id="Bitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="234"
+                 TabSkip="no" Text="!(loc.ExitDialogBitmap)"/>
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17"
+                 Disabled="yes" Text="!(loc.WixUIBack)"/>
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0"/>
+
+        <Control Id="CompletedTitle" Type="Text" X="135" Y="20" Width="220" Height="60"
+                 Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="!(loc.ExitDialogTitle)">
+          <Condition Action="show">
+            NOT (WixUI_InstallMode="Remove" OR REMOVE~="ALL")
+          </Condition>
+        </Control>
+        <Control Id="CompletedDescription" Type="Text" X="135" Y="70"
+                 Width="220" Height="40" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="!(loc.ExitDialogDescription)">
+          <Condition Action="show">
+            NOT (WixUI_InstallMode="Remove" OR REMOVE~="ALL")
+          </Condition>
+        </Control>
+        <Control Id="UninstallTitle" Type="Text" X="135" Y="45"
+                 Width="220" Height="60" Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="{\WixUI_Font_Bigger}AirPlay Receiver 已卸载">
+          <Condition Action="show">
+            WixUI_InstallMode="Remove" OR REMOVE~="ALL"
+          </Condition>
+        </Control>
+
+        <Control Id="OptionalText" Type="Text" X="135" Y="110" Width="220" Height="80"
+                 Transparent="yes" NoPrefix="yes" Hidden="yes"
+                 Text="[WIXUI_EXITDIALOGOPTIONALTEXT]">
+          <Condition Action="show">
+            WIXUI_EXITDIALOGOPTIONALTEXT AND NOT Installed AND
+            NOT (WixUI_InstallMode="Remove" OR REMOVE~="ALL")
+          </Condition>
+        </Control>
+        <Control Id="OptionalCheckBox" Type="CheckBox" X="135" Y="190"
+                 Width="220" Height="40" Hidden="yes"
+                 Property="WIXUI_EXITDIALOGOPTIONALCHECKBOX" CheckBoxValue="1"
+                 Text="[WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT]">
+          <Condition Action="show">
+            WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT AND NOT Installed AND
+            NOT (WixUI_InstallMode="Remove" OR REMOVE~="ALL")
+          </Condition>
+        </Control>
+      </Dialog>
+
+      <InstallUISequence>
+        <Show Dialog="ResumeDlg" Before="ProgressDlg">
+          Installed AND (RESUME OR Preselected) AND
+          NOT (REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE)
+        </Show>
+        <Show Dialog="AirPlayExitDialog" OnExit="success" Overridable="yes">1</Show>
+      </InstallUISequence>
+      <AdminUISequence>
+        <Show Dialog="AirPlayExitDialog" OnExit="success" Overridable="yes">1</Show>
+      </AdminUISequence>
+    </UI>
+    <UIRef Id="WixUI_Common"/>
+  </Fragment>
+</Wix>

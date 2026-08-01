@@ -1,0 +1,286 @@
+plugins {
+    id 'application'
+}
+
+dependencies {
+    implementation project(':server')
+    implementation project(':player:gstreamer')
+
+    implementation "com.formdev:flatlaf:$flatLafVersion"
+    implementation "com.formdev:flatlaf-extras:$flatLafVersion"
+    implementation "com.fasterxml.jackson.core:jackson-databind:$jacksonVersion"
+    implementation "net.java.dev.jna:jna:$jnaVersion"
+    implementation "net.java.dev.jna:jna-platform:$jnaVersion"
+    implementation "ch.qos.logback:logback-classic:$logbackVersion"
+
+    testImplementation 'org.assertj:assertj-core:3.27.7'
+}
+
+application {
+    mainClass = 'io.github.qiuspace.airplay.app.PlayerApp'
+    applicationName = 'AirPlay Receiver'
+}
+
+jar {
+    archiveBaseName = 'airplay-receiver'
+    manifest {
+        attributes 'Main-Class': application.mainClass.get(),
+                'Implementation-Title': 'AirPlay Receiver',
+                'Implementation-Version': project.version.toString()
+    }
+}
+
+def packageInput = layout.buildDirectory.dir('package/input')
+def packageImage = layout.buildDirectory.dir('package/image')
+def packageStagedImage = layout.buildDirectory.dir('package/staged-image')
+def packageInstaller = layout.buildDirectory.dir('package/installer')
+def packageInstallerTemp = layout.buildDirectory.dir('package/installer-temp')
+// This project is an independent product line and must never be treated as a
+// downgrade or upgrade of the legacy AirPlay Receiver installer.
+def windowsUpgradeUuid = '1f3ec6ef-a62d-4f9e-bc47-6e9a6d5f2c48'
+def windowsResources = layout.projectDirectory.dir('src/jpackage/windows')
+def windowsIcon = layout.projectDirectory.file('src/jpackage/windows/AirPlay Receiver.ico')
+def isWindows = System.getProperty('os.name').toLowerCase(Locale.ROOT).contains('windows')
+
+// The upstream Windows runtime also contains headers, static/import libraries,
+// development tools and every GStreamer plug-in.  Most of its 4+ GiB is not
+// needed by the three pipelines used by this application.  Keep the native
+// dependency closure for those pipelines explicit so an SDK can never be
+// copied wholesale into the product again.
+def gstreamerRuntimeFiles = [
+        // GStreamer/GLib and FFmpeg DLLs used by the selected plug-ins.
+        'bin/avcodec-*.dll',
+        'bin/avfilter-*.dll',
+        'bin/avformat-*.dll',
+        'bin/avutil-*.dll',
+        'bin/bz2.dll',
+        'bin/ffi-*.dll',
+        'bin/glib-2.0-0.dll',
+        'bin/gmodule-2.0-0.dll',
+        'bin/gobject-2.0-0.dll',
+        'bin/gstapp-1.0-0.dll',
+        'bin/gstaudio-1.0-0.dll',
+        'bin/gstbase-1.0-0.dll',
+        'bin/gstcodecparsers-1.0-0.dll',
+        'bin/gstpbutils-1.0-0.dll',
+        'bin/gstreamer-1.0-0.dll',
+        'bin/gsttag-1.0-0.dll',
+        'bin/gstvideo-1.0-0.dll',
+        'bin/gst-inspect-1.0.exe',
+        'bin/intl-*.dll',
+        'bin/orc-*.dll',
+        'bin/pcre2-8-0.dll',
+        'bin/swresample-*.dll',
+        'bin/swscale-*.dll',
+        'bin/z-1.dll',
+
+        // appsrc/appsink, parsing, H.264/ALAC/AAC decoding, conversion,
+        // volume and native Windows audio output.
+        'lib/gstreamer-1.0/gstapp.dll',
+        'lib/gstreamer-1.0/gstcoreelements.dll',
+        'lib/gstreamer-1.0/gstvideoparsersbad.dll',
+        'lib/gstreamer-1.0/gstlibav.dll',
+        'lib/gstreamer-1.0/gstvideoconvertscale.dll',
+        'lib/gstreamer-1.0/gstaudioconvert.dll',
+        'lib/gstreamer-1.0/gstaudioresample.dll',
+        'lib/gstreamer-1.0/gstvolume.dll',
+        'lib/gstreamer-1.0/gstautodetect.dll',
+        'lib/gstreamer-1.0/gstwasapi.dll',
+        'lib/gstreamer-1.0/gstwasapi2.dll',
+
+        // Required when GStreamer creates a fresh per-user plug-in registry.
+        'libexec/gstreamer-1.0/gst-plugin-scanner.exe',
+
+        // Preserve the upstream notices for every dynamically linked component.
+        'share/licenses/**'
+]
+def requiredGstreamerFiles = [
+        'bin/gstreamer-1.0-0.dll',
+        'bin/gst-inspect-1.0.exe',
+        'lib/gstreamer-1.0/gstapp.dll',
+        'lib/gstreamer-1.0/gstvideoparsersbad.dll',
+        'lib/gstreamer-1.0/gstlibav.dll',
+        'lib/gstreamer-1.0/gstvideoconvertscale.dll',
+        'lib/gstreamer-1.0/gstaudioconvert.dll',
+        'lib/gstreamer-1.0/gstaudioresample.dll',
+        'lib/gstreamer-1.0/gstvolume.dll',
+        'lib/gstreamer-1.0/gstautodetect.dll',
+        'lib/gstreamer-1.0/gstwasapi2.dll',
+        'libexec/gstreamer-1.0/gst-plugin-scanner.exe'
+]
+def maximumStagedGstreamerBytes = 80L * 1024L * 1024L
+
+tasks.register('preparePackageInput', Sync) {
+    dependsOn jar
+    into packageInput
+    from(tasks.named('jar'))
+    from(configurations.runtimeClasspath)
+    from(rootProject.file('LICENSE'))
+    from(rootProject.file('ACKNOWLEDGEMENTS.md'))
+    from(rootProject.file('THIRD_PARTY_NOTICES.md'))
+}
+
+tasks.register('packageAppImage', Exec) {
+    dependsOn tasks.named('preparePackageInput')
+    onlyIf { isWindows }
+    inputs.dir packageInput
+    inputs.property 'appVersion', project.version.toString()
+    inputs.property 'mainClass', application.mainClass
+    inputs.file windowsIcon
+    outputs.dir packageImage
+    doFirst {
+        delete packageImage
+        def jpackage = javaToolchains.launcherFor {
+            languageVersion = JavaLanguageVersion.of(21)
+        }.get().metadata.installationPath.file('bin/jpackage.exe').asFile
+        commandLine jpackage,
+                '--type', 'app-image',
+                '--name', 'AirPlay Receiver',
+                '--dest', packageImage.get().asFile,
+                '--input', packageInput.get().asFile,
+                '--main-jar', tasks.named('jar').get().archiveFileName.get(),
+                '--main-class', application.mainClass.get(),
+                '--app-version', project.version.toString(),
+                '--vendor', 'qiuspace',
+                '--description', 'AirPlay receiver for Windows screen mirroring and system audio',
+                '--icon', windowsIcon.asFile,
+                '--java-options', '-Xms32m',
+                '--java-options', '-Xmx512m',
+                '--java-options', '-XX:MaxDirectMemorySize=256m',
+                '--java-options', '-XX:G1PeriodicGCInterval=5000',
+                '--java-options', '-XX:MaxHeapFreeRatio=10',
+                '--java-options', '-XX:MinHeapFreeRatio=5',
+                '--java-options', '-XX:-ShrinkHeapInSteps',
+                '--java-options', '-Dio.netty.allocator.numDirectArenas=2',
+                '--java-options', '-Dio.netty.allocator.numHeapArenas=2',
+                '--java-options', '-Djdk.nio.maxCachedBufferSize=262144',
+                '--add-modules', 'java.base,java.desktop,java.logging,java.management,java.naming,java.prefs,java.sql,java.xml,jdk.crypto.ec,jdk.localedata,jdk.net,jdk.unsupported',
+                '--jlink-options', '--strip-debug --no-header-files --no-man-pages --strip-native-commands --compress=zip-6'
+    }
+}
+
+tasks.register('stageGStreamerRuntime', Sync) {
+    dependsOn tasks.named('packageAppImage')
+    onlyIf { isWindows }
+    def runtimeDirectory = providers.environmentVariable('GSTREAMER_RUNTIME_DIR')
+    into packageStagedImage
+    from(packageImage)
+    from(runtimeDirectory) {
+        into 'AirPlay Receiver/gstreamer'
+        include gstreamerRuntimeFiles
+        includeEmptyDirs = false
+    }
+    doFirst {
+        if (!runtimeDirectory.isPresent()) {
+            throw new GradleException('GSTREAMER_RUNTIME_DIR must point to the GStreamer 1.28.5 MSVC x86_64 runtime')
+        }
+    }
+    doLast {
+        def stagedRuntime = packageStagedImage.get().dir('AirPlay Receiver/gstreamer').asFile
+        def missingFiles = requiredGstreamerFiles.findAll { !new File(stagedRuntime, it).isFile() }
+        if (!missingFiles.isEmpty()) {
+            throw new GradleException("The pruned GStreamer runtime is missing: ${missingFiles.join(', ')}")
+        }
+
+        long stagedBytes = fileTree(stagedRuntime).files.sum { it.length() } ?: 0L
+        if (stagedBytes > maximumStagedGstreamerBytes) {
+            throw new GradleException(String.format(Locale.ROOT,
+                    'Pruned GStreamer runtime is unexpectedly large: %.1f MiB (limit: 80 MiB)',
+                    stagedBytes / 1024d / 1024d))
+        }
+        logger.lifecycle(String.format(Locale.ROOT,
+                'Staged pruned GStreamer runtime: %d files, %.1f MiB',
+                fileTree(stagedRuntime).files.size(), stagedBytes / 1024d / 1024d))
+    }
+}
+
+tasks.register('packageWindows', Exec) {
+    dependsOn tasks.named('stageGStreamerRuntime')
+    onlyIf { isWindows }
+    inputs.dir packageStagedImage
+    inputs.property 'appVersion', project.version.toString()
+    inputs.dir windowsResources
+    outputs.dir packageInstaller
+    doFirst {
+        delete packageInstaller
+        delete packageInstallerTemp
+        def jpackage = javaToolchains.launcherFor {
+            languageVersion = JavaLanguageVersion.of(21)
+        }.get().metadata.installationPath.file('bin/jpackage.exe').asFile
+        def inheritedJvmOptions = System.getenv('JAVA_TOOL_OPTIONS') ?: ''
+        environment 'JAVA_TOOL_OPTIONS',
+                "${inheritedJvmOptions} -Duser.language=zh -Duser.country=CN".trim()
+        environment 'AIRPLAY_INSTALLER_RESOURCE_DIR', windowsResources.asFile.absolutePath
+        def arguments = [
+                '--verbose',
+                '--type', 'exe',
+                '--name', 'AirPlay Receiver',
+                '--dest', packageInstaller.get().asFile,
+                // Retain jpackage's intermediate MSI for CI lifecycle tests.
+                // Releases still publish only the branded EXE wrapper.
+                '--temp', packageInstallerTemp.get().asFile,
+                '--app-image', packageStagedImage.get().dir('AirPlay Receiver').asFile,
+                '--app-version', project.version.toString(),
+                '--vendor', 'qiuspace',
+                '--description', 'AirPlay receiver for Windows screen mirroring and system audio',
+                '--icon', windowsIcon.asFile,
+                '--win-per-user-install',
+                '--win-upgrade-uuid', windowsUpgradeUuid,
+                '--resource-dir', windowsResources.asFile,
+                // Keep binaries away from %LOCALAPPDATA%\AirPlay Receiver for Windows, which is
+                // intentionally reserved for logs that must survive an uninstall.
+                '--install-dir', 'AirPlay Receiver for Windows App',
+                '--win-dir-chooser',
+                '--win-menu',
+                '--win-menu-group', 'AirPlay Receiver for Windows',
+                '--win-shortcut',
+                '--win-shortcut-prompt',
+                '--license-file', rootProject.file('LICENSE')]
+        commandLine([jpackage] + arguments)
+    }
+    doLast {
+        def installers = fileTree(packageInstaller).matching { include '*.exe' }.files
+        if (installers.size() != 1) {
+            throw new GradleException("Expected one Windows installer to rename, found ${installers.size()}")
+        }
+        def testInstallers = fileTree(packageInstallerTemp)
+                .matching { include 'images/win-exe.image/*.msi' }
+                .files
+        if (testInstallers.size() != 1) {
+            throw new GradleException(
+                    "Expected one retained MSI for lifecycle tests, found ${testInstallers.size()}")
+        }
+        def target = packageInstaller.get()
+                .file("AirPlay-Receiver-${project.version}-windows-x64-setup.exe")
+                .asFile
+        java.nio.file.Files.move(
+                installers.first().toPath(),
+                target.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        logger.lifecycle("Windows installer: ${target.name}")
+        logger.lifecycle("Retained test MSI: ${testInstallers.first().name}")
+    }
+}
+
+tasks.register('signWindowsPackage', Exec) {
+    dependsOn tasks.named('packageWindows')
+    def signingUser = providers.environmentVariable('WINDOWS_SIGNING_KEY_USER')
+    onlyIf { isWindows && signingUser.orNull?.trim() }
+    doFirst {
+        def installers = fileTree(packageInstaller).matching { include '*.exe' }.files
+        if (installers.size() != 1) {
+            throw new GradleException("Expected one Windows installer to sign, found ${installers.size()}")
+        }
+        def signTool = providers.environmentVariable('WINDOWS_SIGNTOOL').getOrElse('signtool.exe')
+        def timestampUrl = providers.environmentVariable('WINDOWS_TIMESTAMP_URL')
+                .getOrElse('http://timestamp.digicert.com')
+        commandLine signTool, 'sign', '/a', '/n', signingUser.get().trim(), '/fd', 'SHA256',
+                '/tr', timestampUrl, '/td', 'SHA256', installers.first()
+    }
+}
+
+tasks.register('selfTest', JavaExec) {
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = application.mainClass
+    args '--self-test'
+}

@@ -1,0 +1,483 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+
+  <?ifdef JpIsSystemWide ?>
+    <?define JpInstallScope="perMachine"?>
+  <?else?>
+    <?define JpInstallScope="perUser"?>
+  <?endif?>
+
+  <?define JpProductLanguage=2052 ?>
+  <?define JpInstallerVersion=200 ?>
+  <?define JpCompressedMsi=yes ?>
+  <?define AirPlayInstallerPreferencesKey="Software\qiuspace\AirPlay Receiver for Windows\Installer" ?>
+  <?define AirPlayUninstallKey="Software\Microsoft\Windows\CurrentVersion\Uninstall\{$(var.JpProductCode)}" ?>
+
+  <?include $(var.JpConfigDir)/overrides.wxi ?>
+
+  <?ifdef JpAllowUpgrades ?>
+    <?define JpUpgradeVersionOnlyDetectUpgrade="no"?>
+  <?else?>
+    <?define JpUpgradeVersionOnlyDetectUpgrade="yes"?>
+  <?endif?>
+  <?ifdef JpAllowDowngrades ?>
+    <?define JpUpgradeVersionOnlyDetectDowngrade="no"?>
+  <?else?>
+    <?define JpUpgradeVersionOnlyDetectDowngrade="yes"?>
+  <?endif?>
+
+  <Product
+    Id="$(var.JpProductCode)"
+    Name="$(var.JpAppName) $(var.JpAppVersion)"
+    Language="$(var.JpProductLanguage)"
+    Version="$(var.JpAppVersion)"
+    Manufacturer="$(var.JpAppVendor)"
+    UpgradeCode="$(var.JpProductUpgradeCode)">
+
+    <Package
+      Description="$(var.JpAppDescription)"
+      Manufacturer="$(var.JpAppVendor)"
+      InstallerVersion="$(var.JpInstallerVersion)"
+      Compressed="$(var.JpCompressedMsi)"
+      InstallScope="$(var.JpInstallScope)" Platform="x64"
+    />
+
+    <Media Id="1" Cabinet="Data.cab" EmbedCab="yes" />
+
+    <Upgrade Id="$(var.JpProductUpgradeCode)">
+      <UpgradeVersion
+        OnlyDetect="$(var.JpUpgradeVersionOnlyDetectUpgrade)"
+        Property="JP_UPGRADABLE_FOUND"
+        Maximum="$(var.JpAppVersion)"
+        MigrateFeatures="yes"
+        IncludeMaximum="$(var.JpUpgradeVersionOnlyDetectUpgrade)" />
+      <UpgradeVersion
+        OnlyDetect="$(var.JpUpgradeVersionOnlyDetectDowngrade)"
+        Property="JP_DOWNGRADABLE_FOUND"
+        Minimum="$(var.JpAppVersion)"
+        MigrateFeatures="yes"
+        IncludeMinimum="$(var.JpUpgradeVersionOnlyDetectDowngrade)" />
+    </Upgrade>
+
+    <!--
+      Restart Manager normally asks Swing windows to close.  The receiver's
+      close button intentionally hides it to the tray, so explicitly send the
+      end-session protocol before touching the installed files. This UI-safe
+      action waits up to 15 seconds without scheduling a deferred fallback;
+      taskkill then handles a remaining process before InstallInitialize.
+      TerminateProcess cannot be used here because the same action is invoked
+      as a UI ControlEvent, outside the MSI transaction.
+    -->
+    <Property Id="MSIRMSHUTDOWN" Value="1" Secure="yes"/>
+    <Property Id="AIRPLAY_SAVED_INSTALLDIR" Secure="yes">
+      <RegistrySearch
+        Id="AirPlaySavedInstallDirSearch"
+        Root="HKCU"
+        Key="$(var.AirPlayInstallerPreferencesKey)"
+        Name="InstallDir"
+        Type="raw"
+        Win64="yes"/>
+    </Property>
+    <Property Id="AIRPLAY_SAVED_DESKTOP" Secure="yes">
+      <RegistrySearch
+        Id="AirPlaySavedDesktopShortcutSearch"
+        Root="HKCU"
+        Key="$(var.AirPlayInstallerPreferencesKey)"
+        Name="DesktopShortcut"
+        Type="raw"
+        Win64="yes"/>
+    </Property>
+    <Property Id="AIRPLAY_SAVED_STARTMENU" Secure="yes">
+      <RegistrySearch
+        Id="AirPlaySavedStartMenuShortcutSearch"
+        Root="HKCU"
+        Key="$(var.AirPlayInstallerPreferencesKey)"
+        Name="StartMenuShortcut"
+        Type="raw"
+        Win64="yes"/>
+    </Property>
+    <Property Id="AIRPLAY_DESKTOP_PREF" Value="yes" Secure="yes"/>
+    <Property Id="AIRPLAY_STARTMENU_PREF" Value="yes" Secure="yes"/>
+    <Property Id="AIRPLAY_EMPTY_VALUE" Hidden="yes"/>
+    <Property Id="AIRPLAY_INSTALLDIR_CONFIRMED" Secure="yes"/>
+    <Property Id="AIRPLAY_SHORTCUTS_CONFIRMED" Secure="yes"/>
+    <Property Id="AIRPLAY_REMOVE_USER_DATA" Secure="yes"/>
+    <Property Id="AIRPLAY_APP_RUNNING" Secure="yes"/>
+    <Property Id="AIRPLAY_CHECK_RUNNING" Secure="yes"/>
+    <Property Id="AIRPLAY_CLOSE_ALLOWED" Secure="yes"/>
+    <!--
+      Windows invokes an MSI-owned ARP entry through /X{ProductCode}. That
+      route displays the built-in confirmation and bypasses the authored UI
+      sequence. Hide it and publish an application-owned entry whose normal
+      uninstall command opens the installed product in maintenance mode.
+    -->
+    <Property Id="ARPSYSTEMCOMPONENT" Value="1"/>
+
+    <util:CloseApplication
+      Id="DetectAirPlayReceiver"
+      Target="AirPlay Receiver.exe"
+      Property="AIRPLAY_APP_RUNNING"
+      RebootPrompt="no"
+      Sequence="1">
+      AIRPLAY_CHECK_RUNNING=1 AND
+      (Installed OR JP_UPGRADABLE_FOUND OR JP_DOWNGRADABLE_FOUND)
+    </util:CloseApplication>
+    <util:CloseApplication
+      Id="GracefulCloseAirPlayReceiver"
+      Target="AirPlay Receiver.exe"
+      EndSessionMessage="yes"
+      RebootPrompt="no"
+      Timeout="15"
+      Sequence="2">
+      (AIRPLAY_CLOSE_ALLOWED=1 OR UILevel &lt; 4) AND
+      (Installed OR JP_UPGRADABLE_FOUND OR JP_DOWNGRADABLE_FOUND)
+    </util:CloseApplication>
+
+    <?ifndef JpAllowUpgrades ?>
+    <CustomAction Id="JpDisallowUpgrade" Error="!(loc.DisallowUpgradeErrorMessage)" />
+    <?endif?>
+    <?ifndef JpAllowDowngrades ?>
+    <CustomAction Id="JpDisallowDowngrade" Error="!(loc.DowngradeErrorMessage)" />
+    <?endif?>
+
+    <Binary Id="JpCaDll" SourceFile="wixhelper.dll"/>
+    <CustomAction Id="JpFindRelatedProducts" BinaryKey="JpCaDll" DllEntry="FindRelatedProductsEx" />
+    <CustomAction
+      Id="AirPlayRestoreInstallDir"
+      Property="INSTALLDIR"
+      Value="[AIRPLAY_SAVED_INSTALLDIR]"/>
+    <CustomAction
+      Id="AirPlayRestoreDesktopShortcut"
+      Property="JP_INSTALL_DESKTOP_SHORTCUT"
+      Value="1"/>
+    <CustomAction
+      Id="AirPlayClearDesktopShortcut"
+      Property="JP_INSTALL_DESKTOP_SHORTCUT"
+      Value="[AIRPLAY_EMPTY_VALUE]"/>
+    <CustomAction
+      Id="AirPlayRestoreStartMenuShortcut"
+      Property="JP_INSTALL_STARTMENU_SHORTCUT"
+      Value="1"/>
+    <CustomAction
+      Id="AirPlayClearStartMenuShortcut"
+      Property="JP_INSTALL_STARTMENU_SHORTCUT"
+      Value="[AIRPLAY_EMPTY_VALUE]"/>
+    <CustomAction
+      Id="AirPlayCaptureDesktopShortcut"
+      Property="AIRPLAY_DESKTOP_PREF"
+      Value="yes"/>
+    <CustomAction
+      Id="AirPlayCaptureNoDesktopShortcut"
+      Property="AIRPLAY_DESKTOP_PREF"
+      Value="no"/>
+    <CustomAction
+      Id="AirPlayCaptureStartMenuShortcut"
+      Property="AIRPLAY_STARTMENU_PREF"
+      Value="yes"/>
+    <CustomAction
+      Id="AirPlayCaptureNoStartMenuShortcut"
+      Property="AIRPLAY_STARTMENU_PREF"
+      Value="no"/>
+    <CustomAction
+      Id="AirPlayResetRunningStatus"
+      Property="AIRPLAY_APP_RUNNING"
+      Value="[AIRPLAY_EMPTY_VALUE]"/>
+    <CustomAction
+      Id="AirPlayResetCloseAllowed"
+      Property="AIRPLAY_CLOSE_ALLOWED"
+      Value="[AIRPLAY_EMPTY_VALUE]"/>
+    <CustomAction
+      Id="AirPlayResetRunningCheck"
+      Property="AIRPLAY_CHECK_RUNNING"
+      Value="[AIRPLAY_EMPTY_VALUE]"/>
+    <CustomAction
+      Id="AirPlaySetForceCloseCommand"
+      Property="WixQuietExecCmdLine"
+      Value="&quot;[SystemFolder]taskkill.exe&quot; /F /T /IM &quot;AirPlay Receiver.exe&quot;"/>
+    <CustomAction
+      Id="AirPlayQuietForceClose"
+      BinaryKey="WixCA"
+      DllEntry="WixQuietExec"
+      Execute="immediate"
+      Impersonate="yes"
+      Return="ignore"/>
+    <CustomAction
+      Id="AirPlayCleanupRegistration"
+      Directory="INSTALLDIR"
+      ExeCommand="&quot;[INSTALLDIR]AirPlay Receiver.exe&quot; --uninstall-cleanup=registration"
+      Execute="immediate"
+      Impersonate="yes"
+      Return="ignore"/>
+    <CustomAction
+      Id="AirPlayCleanupUserData"
+      Directory="INSTALLDIR"
+      ExeCommand="&quot;[INSTALLDIR]AirPlay Receiver.exe&quot; --uninstall-cleanup=user-data"
+      Execute="immediate"
+      Impersonate="yes"
+      Return="ignore"/>
+    <!--
+      Explorer may recreate AppListBackup after RemoveFiles has deleted the
+      launcher.  Run a second, windowless cleanup after InstallFinalize and
+      allow the shell cache to settle before each pass.
+    -->
+    <CustomAction
+      Id="AirPlaySetPostCleanupCommand"
+      Property="WixQuietExecCmdLine"
+      Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[TempFolder]AirPlayReceiver-UninstallCleanup.ps1&quot;"/>
+    <CustomAction
+      Id="AirPlayQuietPostCleanup"
+      BinaryKey="WixCA"
+      DllEntry="WixQuietExec"
+      Execute="immediate"
+      Impersonate="yes"
+      Return="ignore"/>
+
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1"/>
+    <CustomAction
+      Id="AirPlayShowLaunchOption"
+      Property="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT"
+      Value="安装完成后运行 AirPlay Receiver"/>
+    <CustomAction
+      Id="AirPlaySetLaunchTarget"
+      Property="WixShellExecTarget"
+      Value="[INSTALLDIR]AirPlay Receiver.exe"/>
+    <CustomAction
+      Id="LaunchAirPlayReceiver"
+      BinaryKey="WixCA"
+      DllEntry="WixShellExec"
+      Impersonate="yes"/>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="SystemFolder"/>
+    </Directory>
+    <DirectoryRef Id="INSTALLDIR">
+      <Component
+        Id="AirPlayInstallerPreferences"
+        Guid="{FAA78572-1172-4E4D-B7D3-89619E487084}"
+        Win64="yes">
+        <RegistryKey
+          Root="HKCU"
+          Key="$(var.AirPlayInstallerPreferencesKey)"
+          ForceCreateOnInstall="yes"
+          ForceDeleteOnUninstall="yes">
+          <RegistryValue
+            Name="InstallDir"
+            Type="string"
+            Value="[INSTALLDIR]"
+            KeyPath="yes"/>
+          <RegistryValue
+            Name="DesktopShortcut"
+            Type="string"
+            Value="[AIRPLAY_DESKTOP_PREF]"/>
+          <RegistryValue
+            Name="StartMenuShortcut"
+            Type="string"
+            Value="[AIRPLAY_STARTMENU_PREF]"/>
+        </RegistryKey>
+        <RemoveFolder
+          Id="AirPlayRemoveInstallDirectory"
+          Directory="INSTALLDIR"
+          On="uninstall"/>
+      </Component>
+      <Component
+        Id="AirPlayControlPanelEntry"
+        Guid="{31C0D136-EFAD-4A86-9224-39E3665C6962}"
+        Win64="yes">
+        <RegistryKey
+          Root="HKCU"
+          Key="$(var.AirPlayUninstallKey)"
+          ForceCreateOnInstall="yes"
+          ForceDeleteOnUninstall="yes">
+          <RegistryValue
+            Name="DisplayName"
+            Type="string"
+            Value="$(var.JpAppName) $(var.JpAppVersion)"
+            KeyPath="yes"/>
+          <RegistryValue Name="DisplayVersion" Type="string" Value="$(var.JpAppVersion)"/>
+          <RegistryValue Name="Publisher" Type="string" Value="$(var.JpAppVendor)"/>
+          <RegistryValue Name="Comments" Type="string" Value="$(var.JpAppDescription)"/>
+          <RegistryValue Name="InstallLocation" Type="string" Value="[INSTALLDIR]"/>
+          <RegistryValue Name="DisplayIcon" Type="string" Value="[INSTALLDIR]AirPlay Receiver.exe,0"/>
+          <RegistryValue
+            Name="UninstallString"
+            Type="string"
+            Value="MsiExec.exe /I{$(var.JpProductCode)}"/>
+          <RegistryValue
+            Name="QuietUninstallString"
+            Type="string"
+            Value="MsiExec.exe /X{$(var.JpProductCode)} /qn REBOOT=ReallySuppress"/>
+          <RegistryValue Name="NoModify" Type="integer" Value="1"/>
+          <RegistryValue Name="NoRepair" Type="integer" Value="1"/>
+          <RegistryValue Name="Language" Type="integer" Value="2052"/>
+        </RegistryKey>
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="DefaultFeature" Title="!(loc.MainFeatureTitle)" Level="1">
+      <ComponentGroupRef Id="Shortcuts"/>
+      <ComponentGroupRef Id="Files"/>
+      <ComponentGroupRef Id="FileAssociations"/>
+      <ComponentRef Id="AirPlayInstallerPreferences"/>
+      <ComponentRef Id="AirPlayControlPanelEntry"/>
+    </Feature>
+
+    <CustomAction Id="JpSetARPINSTALLLOCATION" Property="ARPINSTALLLOCATION" Value="[INSTALLDIR]" />
+    <CustomAction Id="JpSetARPCOMMENTS" Property="ARPCOMMENTS" Value="$(var.JpAppDescription)" />
+    <CustomAction Id="JpSetARPCONTACT" Property="ARPCONTACT" Value="$(var.JpAppVendor)" />
+    <CustomAction Id="JpSetARPSIZE" Property="ARPSIZE" Value="$(var.JpAppSizeKb)" />
+
+    <?ifdef JpHelpURL ?>
+      <CustomAction Id="JpSetARPHELPLINK" Property="ARPHELPLINK" Value="$(var.JpHelpURL)" />
+    <?endif?>
+    <?ifdef JpAboutURL ?>
+      <CustomAction Id="JpSetARPURLINFOABOUT" Property="ARPURLINFOABOUT" Value="$(var.JpAboutURL)" />
+    <?endif?>
+    <?ifdef JpUpdateURL ?>
+      <CustomAction Id="JpSetARPURLUPDATEINFO" Property="ARPURLUPDATEINFO" Value="$(var.JpUpdateURL)" />
+    <?endif?>
+    <?ifdef JpIcon ?>
+    <Property Id="ARPPRODUCTICON" Value="JpARPPRODUCTICON"/>
+    <Icon Id="JpARPPRODUCTICON" SourceFile="$(var.JpIcon)"/>
+    <?endif?>
+
+    <WixVariable
+      Id="WixUIDialogBmp"
+      Value="$(env.AIRPLAY_INSTALLER_RESOURCE_DIR)\installer-dialog.bmp"/>
+    <WixVariable
+      Id="WixUIBannerBmp"
+      Value="$(env.AIRPLAY_INSTALLER_RESOURCE_DIR)\installer-banner.bmp"/>
+
+    <UIRef Id="JpUI"/>
+    <UI>
+      <Publish
+        Dialog="InstallDirDlg"
+        Control="Next"
+        Event="[AIRPLAY_INSTALLDIR_CONFIRMED]"
+        Value="1"
+        Order="1">
+        1
+      </Publish>
+      <Publish
+        Dialog="ShortcutPromptDlg"
+        Control="Next"
+        Event="[AIRPLAY_SHORTCUTS_CONFIRMED]"
+        Value="1"
+        Order="1">
+        1
+      </Publish>
+      <Publish
+        Dialog="AirPlayExitDialog"
+        Control="Finish"
+        Event="DoAction"
+        Order="1"
+        Value="AirPlaySetLaunchTarget">
+        WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND
+        (NOT Installed OR JP_UPGRADABLE_FOUND OR JP_DOWNGRADABLE_FOUND)
+      </Publish>
+      <Publish
+        Dialog="AirPlayExitDialog"
+        Control="Finish"
+        Event="DoAction"
+        Order="2"
+        Value="LaunchAirPlayReceiver">
+        WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND
+        (NOT Installed OR JP_UPGRADABLE_FOUND OR JP_DOWNGRADABLE_FOUND)
+      </Publish>
+    </UI>
+
+    <InstallExecuteSequence>
+      <Custom Action="AirPlayRestoreInstallDir" After="AppSearch">
+        AIRPLAY_SAVED_INSTALLDIR AND NOT AIRPLAY_INSTALLDIR_CONFIRMED
+      </Custom>
+      <Custom Action="AirPlayRestoreDesktopShortcut" After="AirPlayRestoreInstallDir">
+        AIRPLAY_SAVED_DESKTOP="yes" AND NOT AIRPLAY_SHORTCUTS_CONFIRMED
+      </Custom>
+      <Custom Action="AirPlayClearDesktopShortcut" After="AirPlayRestoreDesktopShortcut">
+        AIRPLAY_SAVED_DESKTOP="no" AND NOT AIRPLAY_SHORTCUTS_CONFIRMED
+      </Custom>
+      <Custom Action="AirPlayRestoreStartMenuShortcut" After="AirPlayClearDesktopShortcut">
+        AIRPLAY_SAVED_STARTMENU="yes" AND NOT AIRPLAY_SHORTCUTS_CONFIRMED
+      </Custom>
+      <Custom Action="AirPlayClearStartMenuShortcut" After="AirPlayRestoreStartMenuShortcut">
+        AIRPLAY_SAVED_STARTMENU="no" AND NOT AIRPLAY_SHORTCUTS_CONFIRMED
+      </Custom>
+      <Custom Action="AirPlayCaptureDesktopShortcut" Before="AirPlayCaptureNoDesktopShortcut">
+        JP_INSTALL_DESKTOP_SHORTCUT AND NOT (REMOVE~="ALL")
+      </Custom>
+      <Custom Action="AirPlayCaptureNoDesktopShortcut" Before="AirPlayCaptureStartMenuShortcut">
+        (NOT JP_INSTALL_DESKTOP_SHORTCUT) AND NOT (REMOVE~="ALL")
+      </Custom>
+      <Custom Action="AirPlayCaptureStartMenuShortcut" Before="AirPlayCaptureNoStartMenuShortcut">
+        JP_INSTALL_STARTMENU_SHORTCUT AND NOT (REMOVE~="ALL")
+      </Custom>
+      <Custom Action="AirPlayCaptureNoStartMenuShortcut" Before="WriteRegistryValues">
+        (NOT JP_INSTALL_STARTMENU_SHORTCUT) AND NOT (REMOVE~="ALL")
+      </Custom>
+      <Custom Action="JpSetARPINSTALLLOCATION" After="CostFinalize">Not Installed</Custom>
+      <Custom Action="JpSetARPCOMMENTS" After="CostFinalize">Not Installed</Custom>
+      <Custom Action="JpSetARPCONTACT" After="CostFinalize">Not Installed</Custom>
+      <Custom Action="JpSetARPSIZE" After="CostFinalize">Not Installed</Custom>
+      <?ifdef JpHelpURL ?>
+        <Custom Action="JpSetARPHELPLINK" After="CostFinalize">Not Installed</Custom>
+      <?endif?>
+      <?ifdef JpAboutURL ?>
+        <Custom Action="JpSetARPURLINFOABOUT" After="CostFinalize">Not Installed</Custom>
+      <?endif?>
+      <?ifdef JpUpdateURL ?>
+        <Custom Action="JpSetARPURLUPDATEINFO" After="CostFinalize">Not Installed</Custom>
+      <?endif?>
+      <?ifndef JpAllowUpgrades ?>
+      <Custom Action="JpDisallowUpgrade" After="JpFindRelatedProducts">JP_UPGRADABLE_FOUND</Custom>
+      <?endif?>
+      <?ifndef JpAllowDowngrades ?>
+      <Custom Action="JpDisallowDowngrade" After="JpFindRelatedProducts">JP_DOWNGRADABLE_FOUND</Custom>
+      <?endif?>
+      <Custom Action="WixCloseApplications" After="InstallValidate">
+        VersionNT &gt; 400 AND (Installed OR JP_UPGRADABLE_FOUND OR JP_DOWNGRADABLE_FOUND)
+      </Custom>
+      <Custom Action="AirPlaySetForceCloseCommand" After="WixCloseApplications">
+        VersionNT &gt; 400 AND (Installed OR JP_UPGRADABLE_FOUND OR JP_DOWNGRADABLE_FOUND)
+      </Custom>
+      <Custom Action="AirPlayQuietForceClose" After="AirPlaySetForceCloseCommand">
+        VersionNT &gt; 400 AND (Installed OR JP_UPGRADABLE_FOUND OR JP_DOWNGRADABLE_FOUND)
+      </Custom>
+      <RemoveExistingProducts After="InstallInitialize"/>
+      <Custom Action="AirPlayCleanupRegistration" After="RemoveShortcuts">
+        REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE
+      </Custom>
+      <Custom Action="AirPlayCleanupUserData" After="AirPlayCleanupRegistration">
+        REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE AND AIRPLAY_REMOVE_USER_DATA=1
+      </Custom>
+      <Custom Action="AirPlaySetPostCleanupCommand" After="InstallFinalize">
+        REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE
+      </Custom>
+      <Custom Action="AirPlayQuietPostCleanup" After="AirPlaySetPostCleanupCommand">
+        REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE
+      </Custom>
+      <Custom Action="JpFindRelatedProducts" After="FindRelatedProducts"/>
+    </InstallExecuteSequence>
+
+    <InstallUISequence>
+      <Custom Action="AirPlayRestoreInstallDir" After="AppSearch">
+        AIRPLAY_SAVED_INSTALLDIR
+      </Custom>
+      <Custom Action="AirPlayRestoreDesktopShortcut" After="AirPlayRestoreInstallDir">
+        AIRPLAY_SAVED_DESKTOP="yes"
+      </Custom>
+      <Custom Action="AirPlayClearDesktopShortcut" After="AirPlayRestoreDesktopShortcut">
+        AIRPLAY_SAVED_DESKTOP="no"
+      </Custom>
+      <Custom Action="AirPlayRestoreStartMenuShortcut" After="AirPlayClearDesktopShortcut">
+        AIRPLAY_SAVED_STARTMENU="yes"
+      </Custom>
+      <Custom Action="AirPlayClearStartMenuShortcut" After="AirPlayRestoreStartMenuShortcut">
+        AIRPLAY_SAVED_STARTMENU="no"
+      </Custom>
+      <Custom Action="JpFindRelatedProducts" After="FindRelatedProducts"/>
+      <Custom Action="AirPlayShowLaunchOption" After="JpFindRelatedProducts">
+        NOT Installed OR JP_UPGRADABLE_FOUND OR JP_DOWNGRADABLE_FOUND
+      </Custom>
+    </InstallUISequence>
+  </Product>
+</Wix>
