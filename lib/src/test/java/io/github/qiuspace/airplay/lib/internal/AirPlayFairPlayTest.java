@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -67,9 +68,29 @@ class AirPlayFairPlayTest {
         Path payloadFile = Paths.get(AirPlayFairPlayTest.class.getResource("/encrypted_payload").toURI());
         byte[] payload = Files.readAllBytes(payloadFile);
 
-        fairPlayVideoDecryptor.decrypt(payload);
-        int nc_len = (payload[3] & 0xFF) | ((payload[2] & 0xFF) << 8) | ((payload[1] & 0xFF) << 16) | ((payload[0] & 0xFF) << 24);
+        byte[] expected = payload.clone();
+        fairPlayVideoDecryptor.decrypt(expected);
+        int nc_len = (expected[3] & 0xFF) | ((expected[2] & 0xFF) << 8)
+                | ((expected[1] & 0xFF) << 16) | ((expected[0] & 0xFF) << 24);
 
+        FairPlayVideoDecryptor directDecryptor = new FairPlayVideoDecryptor(
+                airPlay.getFairPlayAesKey(), sharedSecret, Long.toUnsignedString(streamConnectionID));
+        ByteBuffer directPayload = ByteBuffer.allocateDirect(payload.length);
+        directPayload.put(payload).flip();
+        ByteBuffer firstChunk = directPayload.duplicate();
+        firstChunk.limit(Math.min(7, firstChunk.remaining()));
+        directDecryptor.decrypt(firstChunk);
+        ByteBuffer secondChunk = directPayload.duplicate();
+        secondChunk.position(firstChunk.limit());
+        secondChunk.limit(secondChunk.position() + Math.min(2, secondChunk.remaining()));
+        directDecryptor.decrypt(secondChunk);
+        ByteBuffer remainingChunk = directPayload.duplicate();
+        remainingChunk.position(secondChunk.limit());
+        directDecryptor.decrypt(remainingChunk);
+        byte[] actual = new byte[payload.length];
+        directPayload.get(actual);
+
+        assertArrayEquals(expected, actual, "Direct ByteBuffer decryption differs from byte[] decryption");
         assertEquals(payload.length - 4, nc_len, "Decrypted payload is corrupted!");
     }
 }

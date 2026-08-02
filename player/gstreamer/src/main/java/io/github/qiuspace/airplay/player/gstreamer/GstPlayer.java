@@ -3,6 +3,7 @@ package io.github.qiuspace.airplay.player.gstreamer;
 import io.github.qiuspace.airplay.lib.AudioStreamInfo;
 import io.github.qiuspace.airplay.lib.VideoStreamInfo;
 import io.github.qiuspace.airplay.server.AirPlayConsumer;
+import io.netty.buffer.ByteBuf;
 import lombok.extern.slf4j.Slf4j;
 import org.freedesktop.gstreamer.Buffer;
 import org.freedesktop.gstreamer.Bus;
@@ -20,7 +21,6 @@ import org.freedesktop.gstreamer.Structure;
 import org.freedesktop.gstreamer.Version;
 import org.freedesktop.gstreamer.elements.AppSink;
 import org.freedesktop.gstreamer.elements.AppSrc;
-import org.freedesktop.gstreamer.swing.GstVideoComponent;
 
 import javax.swing.JComponent;
 import javax.swing.JPanel;
@@ -28,8 +28,8 @@ import javax.swing.SwingUtilities;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
-import java.awt.Container;
 import java.awt.Dimension;
+import java.nio.ByteBuffer;
 import java.beans.PropertyChangeListener;
 import java.lang.reflect.InvocationTargetException;
 import java.util.Objects;
@@ -50,6 +50,7 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
     private final JPanel videoHost = new JPanel(new BorderLayout());
     private final ScheduledExecutorService maintenanceExecutor;
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final VideoMetrics videoMetrics = new VideoMetrics();
     private final VideoFormatNotifier videoFormatNotifier = new VideoFormatNotifier();
     private final AudioPipeline alacAudio;
     private final AudioPipeline aacEldAudio;
@@ -61,6 +62,7 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
     private volatile double volume = 1.0;
     private volatile boolean muted;
     private volatile ScheduledFuture<?> memoryReclaim;
+    private volatile ScheduledFuture<?> metricsLogger;
 
     public GstPlayer() {
         GstRuntime.RuntimeCheck runtime = GstRuntime.configure();
@@ -76,6 +78,8 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
             thread.setDaemon(true);
             return thread;
         });
+        metricsLogger = maintenanceExecutor.scheduleAtFixedRate(this::logVideoMetrics,
+                30, 30, TimeUnit.SECONDS);
 
         video = createVideoPipeline();
         installVideoComponent(video.component());
@@ -129,6 +133,18 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
         synchronized (videoLock) {
             VideoPipeline current = video;
             if (current != null && !closed.get()) {
+                videoMetrics.compressed(bytes.length);
+                push(current.source(), bytes);
+            }
+        }
+    }
+
+    @Override
+    public void onVideo(ByteBuf bytes) {
+        synchronized (videoLock) {
+            VideoPipeline current = video;
+            if (current != null && !closed.get()) {
+                videoMetrics.compressed(bytes.readableBytes());
                 push(current.source(), bytes);
             }
         }
@@ -198,6 +214,10 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
             return;
         }
         maintenanceExecutor.shutdownNow();
+        ScheduledFuture<?> logger = metricsLogger;
+        if (logger != null) {
+            logger.cancel(false);
+        }
         synchronized (audioLock) {
             releaseAudioPipeline(alacAudio);
             releaseAudioPipeline(aacEldAudio);
@@ -210,7 +230,18 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
     }
 
     private VideoPipeline createVideoPipeline() {
-        Pipeline pipeline = (Pipeline) Gst.parseLaunch(videoPipelineDescription());
+        boolean hardwareDecode = GstRuntime.hardwareVideoDecodeAvailable();
+        Pipeline pipeline;
+        try {
+            pipeline = (Pipeline) Gst.parseLaunch(videoPipelineDescription(hardwareDecode));
+            log.info("Video decoder selected: {}", hardwareDecode ? "D3D11 hardware" : "software");
+        } catch (RuntimeException error) {
+            if (!hardwareDecode) {
+                throw error;
+            }
+            log.warn("D3D11 video decoder could not be created; falling back to software H.264", error);
+            pipeline = (Pipeline) Gst.parseLaunch(videoPipelineDescription(false));
+        }
         AppSrc source = (AppSrc) pipeline.getElementByName("video-source");
         configureSource(source,
                 "video/x-h264,colorimetry=bt709,stream-format=(string)byte-stream,alignment=(string)au",
@@ -219,7 +250,7 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
         Pad sinkPad = sink.getStaticPad("sink");
         Pad.PROBE formatProbe = this::inspectVideoBuffer;
         sinkPad.addProbe(PadProbeType.BUFFER, formatProbe);
-        GstVideoComponent component = createVideoComponent(sink);
+        QualityVideoComponent component = createVideoComponent(sink);
         FrameReadyObserver frameObserver = installFrameReadyObserver(component);
         Bus bus = pipeline.getBus();
         attachBusHandlers(bus);
@@ -228,9 +259,16 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
     }
 
     static String videoPipelineDescription() {
+        return videoPipelineDescription(GstRuntime.hardwareVideoDecodeAvailable());
+    }
+
+    static String videoPipelineDescription(boolean hardwareDecode) {
+        String decoder = hardwareDecode
+                ? "d3d11h264dec ! d3d11convert ! d3d11download ! videoconvert"
+                : "avdec_h264 ! videoconvert";
         return "appsrc name=video-source max-bytes=" + VIDEO_QUEUE_BYTES
                 + " max-buffers=12 block=true "
-                + "! h264parse ! avdec_h264 ! videoconvert "
+                + "! h264parse ! " + decoder + " "
                 + "! appsink name=video-sink sync=false max-buffers=2 "
                 + "drop=true enable-last-sample=false";
     }
@@ -262,17 +300,16 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
         return new AudioPipeline(type, pipeline, source, volumeElement, bus);
     }
 
-    private GstVideoComponent createVideoComponent(AppSink sink) {
-        final GstVideoComponent[] result = new GstVideoComponent[1];
+    private QualityVideoComponent createVideoComponent(AppSink sink) {
+        final QualityVideoComponent[] result = new QualityVideoComponent[1];
         Runnable create = () -> {
-            result[0] = new GstVideoComponent(sink);
-            result[0].setKeepAspect(true);
+            result[0] = new QualityVideoComponent(sink, videoMetrics);
         };
         runOnEdtAndWait(create);
         return result[0];
     }
 
-    private void installVideoComponent(GstVideoComponent component) {
+    private void installVideoComponent(QualityVideoComponent component) {
         runOnEdtAndWait(() -> {
             videoHost.removeAll();
             if (component != null) {
@@ -346,12 +383,45 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
         }
     }
 
+    /** Copies a retained Netty payload directly into the native GStreamer buffer. */
+    private void push(AppSrc source, ByteBuf bytes) {
+        Buffer buffer = new Buffer(bytes.readableBytes());
+        boolean ownershipTransferred = false;
+        try {
+            try {
+                ByteBuffer target = buffer.map(true);
+                if (target == null) {
+                    throw new IllegalStateException("Unable to map GStreamer video buffer");
+                }
+                // ByteBuf writes directly into the mapped native buffer.  This
+                // handles heap, direct and composite buffers without creating a
+                // temporary byte[]; this is the single copy retained in phase 1.
+                bytes.getBytes(bytes.readerIndex(), target);
+            } finally {
+                buffer.unmap();
+            }
+            videoMetrics.nativeCopy(bytes.readableBytes());
+            ownershipTransferred = true;
+            FlowReturn result = source.pushBuffer(buffer);
+            if (result != FlowReturn.OK && result != FlowReturn.FLUSHING) {
+                videoMetrics.rejected();
+                log.debug("GStreamer rejected an input buffer with status {}", result);
+            }
+        } catch (RuntimeException error) {
+            if (!ownershipTransferred) {
+                buffer.dispose();
+            }
+            throw error;
+        }
+    }
+
     private void releaseVideoPipeline(VideoPipeline current) {
         if (current == null) {
             return;
         }
         current.sinkPad().removeProbe(current.formatProbe());
         current.frameObserver().close();
+        current.component().close();
         installVideoComponent(null);
         stopPipeline(current.pipeline());
         current.sinkPad().dispose();
@@ -412,7 +482,9 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
             return PadProbeReturn.OK;
         }
         try {
-            videoFormatNotifier.beforeBuffer(width, height, listener);
+            if (videoFormatNotifier.beforeBuffer(width, height, listener)) {
+                videoMetrics.formatChanged();
+            }
         } catch (RuntimeException error) {
             log.warn("Could not prepare the playback window for video format {}x{}",
                     width, height, error);
@@ -420,18 +492,14 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
         return PadProbeReturn.OK;
     }
 
-    private FrameReadyObserver installFrameReadyObserver(GstVideoComponent component) {
-        Component renderComponent = findRenderComponent(component);
-        if (renderComponent == null) {
-            log.warn("GStreamer Swing renderer does not expose its frame surface");
-            return FrameReadyObserver.NONE;
-        }
+    private FrameReadyObserver installFrameReadyObserver(QualityVideoComponent component) {
+        Component renderComponent = component;
         PropertyChangeListener observer = event -> {
             if (event.getNewValue() instanceof Dimension size
                     && size.width > 0 && size.height > 0) {
                 int frameWidth = size.width;
                 int frameHeight = size.height;
-                // GstVideoComponent fires preferredSize before it updates its own
+                // The video surface publishes preferredSize before it paints its own
                 // frame dimensions and paints.  Keep the black transition overlay in
                 // place until that EDT turn has completed.
                 SwingUtilities.invokeLater(() ->
@@ -442,19 +510,17 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
         return new FrameReadyObserver(renderComponent, observer);
     }
 
-    private static Component findRenderComponent(Container root) {
-        for (Component child : root.getComponents()) {
-            if (child.getClass().getName().endsWith("$RenderComponent")) {
-                return child;
-            }
-            if (child instanceof Container container) {
-                Component nested = findRenderComponent(container);
-                if (nested != null) {
-                    return nested;
-                }
-            }
+    private void logVideoMetrics() {
+        VideoMetrics.Snapshot snapshot = videoMetrics.snapshotAndReset();
+        if (snapshot.hasVideo()) {
+            log.info("Video performance: compressedBuffers={}, compressedMiB={}, nativeBuffers={}, "
+                            + "nativeMiB={}, renderedFrames={}, formatChanges={}, rejectedBuffers={}",
+                    snapshot.compressedBuffers(),
+                    String.format(java.util.Locale.ROOT, "%.1f", snapshot.compressedBytes() / 1024d / 1024d),
+                    snapshot.nativeBuffers(),
+                    String.format(java.util.Locale.ROOT, "%.1f", snapshot.nativeBytes() / 1024d / 1024d),
+                    snapshot.renderedFrames(), snapshot.formatChanges(), snapshot.rejectedBuffers());
         }
-        return null;
     }
 
     private void runOnEdtAndWait(Runnable action) {
@@ -482,7 +548,7 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
                                  Pad sinkPad,
                                  Pad.PROBE formatProbe,
                                  Bus bus,
-                                 GstVideoComponent component,
+                                 QualityVideoComponent component,
                                  FrameReadyObserver frameObserver) {
     }
 

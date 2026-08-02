@@ -3,6 +3,7 @@ package io.github.qiuspace.airplay.lib.internal;
 import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Arrays;
@@ -15,6 +16,8 @@ public class FairPlayVideoDecryptor {
 
     private final Cipher aesCtrDecrypt;
     private final byte[] og = new byte[16];
+    private final ByteBuffer ogInput = ByteBuffer.wrap(og);
+    private final ByteBuffer ogOutput = ogInput.duplicate();
 
     private int nextDecryptCount;
 
@@ -29,24 +32,60 @@ public class FairPlayVideoDecryptor {
     }
 
     public void decrypt(byte[] video) throws Exception {
-        if (nextDecryptCount > 0) {
-            for (int i = 0; i < nextDecryptCount; i++) {
-                video[i] = (byte) (video[i] ^ og[(16 - nextDecryptCount) + i]);
+        decrypt(ByteBuffer.wrap(video));
+    }
+
+    /**
+     * Decrypts the remaining bytes of {@code video} in-place.  The input and
+     * output views deliberately use duplicates because JCE rejects the exact
+     * same ByteBuffer object even though overlapping storage is supported.
+     */
+    public void decrypt(ByteBuffer video) throws Exception {
+        int length = video.remaining();
+        int base = video.position();
+        int pending = nextDecryptCount;
+        int consumedPending = Math.min(pending, length);
+        if (consumedPending > 0) {
+            for (int i = 0; i < consumedPending; i++) {
+                int position = base + i;
+                video.put(position, (byte) (video.get(position) ^ og[(16 - nextDecryptCount) + i]));
+            }
+            if (consumedPending < pending) {
+                nextDecryptCount = pending - consumedPending;
+                return;
             }
         }
 
-        int encryptlen = ((video.length - nextDecryptCount) / 16) * 16;
-        aesCtrDecrypt.update(video, nextDecryptCount, encryptlen, video, nextDecryptCount);
-        System.arraycopy(video, nextDecryptCount, video, nextDecryptCount, encryptlen);
+        int encryptlen = ((length - consumedPending) / 16) * 16;
+        if (encryptlen > 0) {
+            ByteBuffer input = video.duplicate();
+            input.position(base + consumedPending);
+            input.limit(base + consumedPending + encryptlen);
+            ByteBuffer output = video.duplicate();
+            output.position(base + consumedPending);
+            int written = aesCtrDecrypt.update(input, output);
+            if (written != encryptlen) {
+                throw new IllegalStateException("Unexpected FairPlay AES output length: " + written);
+            }
+        }
 
-        int restlen = (video.length - nextDecryptCount) % 16;
-        int reststart = video.length - restlen;
+        int restlen = (length - consumedPending) % 16;
+        int reststart = length - restlen;
         nextDecryptCount = 0;
         if (restlen > 0) {
             Arrays.fill(og, (byte) 0);
-            System.arraycopy(video, reststart, og, 0, restlen);
-            aesCtrDecrypt.update(og, 0, 16, og, 0);
-            System.arraycopy(og, 0, video, reststart, restlen);
+            for (int i = 0; i < restlen; i++) {
+                og[i] = video.get(base + reststart + i);
+            }
+            ogInput.clear();
+            ogOutput.clear();
+            int written = aesCtrDecrypt.update(ogInput, ogOutput);
+            if (written != 16) {
+                throw new IllegalStateException("Unexpected FairPlay tail output length: " + written);
+            }
+            for (int i = 0; i < restlen; i++) {
+                video.put(base + reststart + i, og[i]);
+            }
             nextDecryptCount = 16 - restlen;
         }
     }

@@ -81,6 +81,10 @@ def gstreamerRuntimeFiles = [
         'lib/gstreamer-1.0/gstvideoparsersbad.dll',
         'lib/gstreamer-1.0/gstlibav.dll',
         'lib/gstreamer-1.0/gstvideoconvertscale.dll',
+        // Optional Windows hardware decode/transfer path.  The application
+        // checks these factories and falls back cleanly when a driver lacks
+        // D3D11 support.
+        'lib/gstreamer-1.0/gstd3d11.dll',
         'lib/gstreamer-1.0/gstaudioconvert.dll',
         'lib/gstreamer-1.0/gstaudioresample.dll',
         'lib/gstreamer-1.0/gstvolume.dll',

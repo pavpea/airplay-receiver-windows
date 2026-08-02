@@ -18,7 +18,12 @@ window, and a Windows tray workflow in one lightweight application.
 - Use a dedicated playback window with native maximize, aspect-ratio-preserving
   resize, rotation-aware layout, volume, mute, and always-on-top controls.
 - Choose Chinese or English, light or dark theme, receiver name, display
-  capability, frame rate, startup behavior, and tray behavior.
+  capability, 60 Hz or 120 Hz frame rate, startup behavior, and tray behavior.
+- Prefer Windows D3D11 H.264 hardware decoding when the installed driver and
+  private GStreamer runtime support it, with an automatic software fallback.
+- Keep the high-rate video path bounded and reference-counted: network payloads
+  stay in Netty ByteBufs through decryption/NALU preparation and are copied only
+  once into a native GStreamer buffer.
 - Bundle a trimmed Java 21 runtime and GStreamer runtime in the Windows
   installer; no separate Java or GStreamer installation is required.
 
@@ -91,6 +96,11 @@ explicitly stated by a release.
 - **Video or audio does not start:** confirm that the private GStreamer runtime
   is present in the installed application directory and run the packaged
   `--self-test` command.
+- **Video is soft or the PC is under load:** keep the playback window near the
+  source aspect ratio and avoid requesting a stream far above the display
+  capability. On supported Windows systems the log records whether D3D11
+  decoding was selected; otherwise the receiver uses the bounded software
+  decoder path.
 - **A previous process blocks an upgrade/uninstall:** the installer asks for
   confirmation, sends a normal close request, waits up to 15 seconds, and then
   uses a hidden fallback termination if needed.
@@ -101,7 +111,9 @@ Requirements:
 
 - JDK 21;
 - Windows 10/11 x64 for the packaged application;
-- GStreamer 1.28.5 MSVC x86_64 runtime for Windows packaging.
+- GStreamer 1.28.5 MSVC x86_64 runtime for Windows packaging;
+- WiX Toolset 3.14+ (`candle.exe` and `light.exe`) on `PATH` for local
+  `jpackage --type exe` builds. GitHub-hosted Windows runners provide WiX.
 
 Run the unit tests on any supported build host:
 
@@ -110,7 +122,8 @@ Run the unit tests on any supported build host:
 ```
 
 On Windows, set `GSTREAMER_RUNTIME_DIR` to the extracted GStreamer runtime and
-build the installer:
+build the installer (the GStreamer runtime is pruned to the codecs and sinks
+used by the desktop receiver):
 
 ```powershell
 .\gradlew.bat test :player:app:stageGStreamerRuntime --console=plain

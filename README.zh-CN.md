@@ -14,7 +14,9 @@ AirPlay Receiver for Windows 是面向 Windows 10/11 x64 的现代 AirPlay 接�
 - 播放随镜像传输的系统音频。
 - 应用关闭主窗口后继续驻留 Windows 通知区域。
 - 独立投屏窗口支持最大化、锁定宽高比缩放、横竖屏布局、音量、静音和窗口置顶。
-- 支持简体中文/英文、浅色/深色主题、接收器名称、分辨率能力、帧率和托盘行为设置。
+- 支持简体中文/英文、浅色/深色主题、接收器名称、分辨率能力、60 Hz/120 Hz 帧率和托盘行为设置。
+- Windows 上优先使用 D3D11 硬件 H.264 解码；驱动或运行时不支持时自动回退到软件解码。
+- 视频网络包使用引用计数的 Netty `ByteBuf`，在原缓冲区内完成解密和 NALU 处理，再只复制一次到 GStreamer 原生缓冲区。
 - 安装包内置精简 Java 21 和 GStreamer 运行时，无需单独安装 Java 或 GStreamer。
 
 ## 安装
@@ -68,6 +70,7 @@ AirPlay Receiver for Windows 是面向 Windows 10/11 x64 的现代 AirPlay 接�
 - **找不到接收器：** 检查两台设备是否在同一局域网，确认 Windows 防火墙允许应用访问，并关闭访客网络隔离。
 - **服务未就绪：** 从应用打开日志目录，检查端口冲突和网络接口状态。
 - **音画无法启动：** 确认安装目录中的私有 GStreamer 运行时完整，并运行打包应用的 `--self-test`。
+- **画面发软或 CPU 占用较高：** 避免请求明显高于显示器能力的源分辨率；支持 D3D11 的 Windows 设备会在日志中记录硬件解码，否则使用有界的软件解码队列。
 - **升级或卸载被旧进程阻塞：** 安装器会请求确认，先正常关闭应用并最多等待 15 秒，随后使用隐藏的兜底终止逻辑。
 
 ## 从源码构建
@@ -76,7 +79,9 @@ AirPlay Receiver for Windows 是面向 Windows 10/11 x64 的现代 AirPlay 接�
 
 - JDK 21；
 - Windows 10/11 x64（生成桌面安装包时）；
-- Windows 打包需要 GStreamer 1.28.5 MSVC x86_64 运行时。
+- Windows 打包需要 GStreamer 1.28.5 MSVC x86_64 运行时；
+- 本地使用 `jpackage --type exe` 生成安装包还需要 WiX Toolset 3.14+，并将
+  `candle.exe` 和 `light.exe` 加入 `PATH`。GitHub Windows Runner 已预装 WiX。
 
 运行单元测试：
 

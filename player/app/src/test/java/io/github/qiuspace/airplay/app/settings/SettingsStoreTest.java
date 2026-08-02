@@ -18,7 +18,7 @@ class SettingsStoreTest {
     void savesAndLoadsSettings() {
         SettingsStore store = new SettingsStore(temporaryDirectory.resolve("settings.json"));
         AppSettings settings = new AppSettings("Living Room", AppSettings.DisplayMode.FULL_HD_1080,
-                1600, 900, 30, AppSettings.ThemeMode.DARK, AppSettings.LanguageMode.EN,
+                1600, 900, 60, AppSettings.ThemeMode.DARK, AppSettings.LanguageMode.EN,
                 true, false, true, true, 0.42);
 
         store.save(settings);
@@ -109,7 +109,7 @@ class SettingsStoreTest {
         assertThat(migrated.displayMode()).isEqualTo(AppSettings.DisplayMode.CUSTOM);
         assertThat(migrated.customWidth()).isEqualTo(1280);
         assertThat(migrated.customHeight()).isEqualTo(720);
-        assertThat(migrated.maxFps()).isEqualTo(30);
+        assertThat(migrated.maxFps()).isEqualTo(60);
         assertThat(Files.isRegularFile(store.settingsFile())).isTrue();
     }
 
@@ -123,7 +123,7 @@ class SettingsStoreTest {
         assertThat(normalized.receiverName()).isNotBlank();
         assertThat(normalized.customWidth()).isEqualTo(640);
         assertThat(normalized.customHeight()).isEqualTo(4320);
-        assertThat(normalized.maxFps()).isEqualTo(60);
+        assertThat(normalized.maxFps()).isEqualTo(120);
         assertThat(normalized.receiverEnabled()).isTrue();
         assertThat(normalized.volume()).isEqualTo(1);
     }

@@ -50,7 +50,7 @@ final class SettingsPanel extends JPanel {
             new JComboBox<>(AppSettings.DisplayMode.values());
     private final JSpinner width = new JSpinner(new SpinnerNumberModel(1920, 640, 7680, 1));
     private final JSpinner height = new JSpinner(new SpinnerNumberModel(1080, 480, 4320, 1));
-    private final JSpinner fps = new JSpinner(new SpinnerNumberModel(60, 15, 60, 1));
+    private final JComboBox<Integer> fps = new JComboBox<>(AppSettings.FRAME_RATE_OPTIONS.toArray(Integer[]::new));
     private final JComboBox<AppSettings.ThemeMode> theme =
             new JComboBox<>(AppSettings.ThemeMode.values());
     private final JComboBox<AppSettings.LanguageMode> language =
@@ -87,7 +87,7 @@ final class SettingsPanel extends JPanel {
         displayMode.setSelectedItem(settings.displayMode());
         width.setValue(settings.customWidth());
         height.setValue(settings.customHeight());
-        fps.setValue(settings.maxFps());
+        fps.setSelectedItem(AppSettings.normalizeFrameRate(settings.maxFps()));
         theme.setSelectedItem(settings.theme());
         language.setSelectedItem(settings.language());
         startWithWindows.setSelected(settings.startWithWindows());
@@ -204,7 +204,7 @@ final class SettingsPanel extends JPanel {
         });
         width.addChangeListener(event -> scheduleAutoSave());
         height.addChangeListener(event -> scheduleAutoSave());
-        fps.addChangeListener(event -> scheduleAutoSave());
+        fps.addActionListener(event -> scheduleAutoSave());
         theme.addActionListener(event -> scheduleAutoSave());
         language.addActionListener(event -> scheduleAutoSave());
         startWithWindows.addActionListener(event -> scheduleAutoSave());
@@ -213,6 +213,14 @@ final class SettingsPanel extends JPanel {
         installLocalizedRenderer(displayMode, "displayMode.");
         installLocalizedRenderer(theme, "theme.");
         installLocalizedRenderer(language, "language.");
+        fps.setRenderer(new DefaultListCellRenderer() {
+            @Override
+            public Component getListCellRendererComponent(JList<?> list, Object value, int index,
+                                                           boolean selected, boolean focused) {
+                String text = value instanceof Integer rate ? rate + " Hz" : "";
+                return super.getListCellRendererComponent(list, text, index, selected, focused);
+            }
+        });
     }
 
     void flushAutoSave() {
@@ -251,7 +259,7 @@ final class SettingsPanel extends JPanel {
     private AppSettings readSettings() {
         return new AppSettings(receiverName.getText(),
                 (AppSettings.DisplayMode) displayMode.getSelectedItem(),
-                (Integer) width.getValue(), (Integer) height.getValue(), (Integer) fps.getValue(),
+                (Integer) width.getValue(), (Integer) height.getValue(), (Integer) fps.getSelectedItem(),
                 (AppSettings.ThemeMode) theme.getSelectedItem(),
                 (AppSettings.LanguageMode) language.getSelectedItem(),
                 startWithWindows.isSelected(), bringToFront.isSelected(), closeToTray.isSelected(),

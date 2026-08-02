@@ -127,6 +127,15 @@ jobs:
               throw "GStreamer element '$element' failed to load: $($inspection -join [Environment]::NewLine)"
             }
           }
+          # D3D11 is an optional acceleration path.  Keep the software
+          # decoder as the guaranteed fallback, but report whether the
+          # packaged runtime can use hardware decode on this runner.
+          $d3d11Inspection = & "$gstRoot\bin\gst-inspect-1.0.exe" d3d11h264dec 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host 'D3D11 H.264 decoder is available in the packaged runtime.'
+          } else {
+            Write-Warning 'D3D11 H.264 decoder is unavailable; the application will use avdec_h264.'
+          }
       - name: Verify app image
         shell: pwsh
         run: |
@@ -137,9 +146,29 @@ jobs:
         if: github.event_name != 'pull_request'
         shell: pwsh
         run: |
-          # Use a synthetic pre-release fixture to exercise upgrades within this
-          # independent product line without comparing it to the legacy installer.
-          $fixtureVersion = '0.9.0'
+          # Build a real MSI from the immediately preceding semantic version.
+          # On the first 1.0.0 release there is no previous artifact yet, so a
+          # synthetic 0.9.0 fixture is used.  This keeps the test independent
+          # of the deleted legacy repository while exercising the same
+          # UpgradeCode, install directory and installer preference registry.
+          $versionMatch = Select-String -Path '.\build.gradle' -Pattern "^\s*version\s*=\s*'([^']+)'\s*$"
+          if (!$versionMatch) { throw 'Unable to read the current Gradle version for the upgrade fixture' }
+          $currentVersion = [version]$versionMatch.Matches[0].Groups[1].Value
+          if ($currentVersion -le [version]'1.0.0') {
+            $fixtureVersion = '0.9.0'
+          } elseif ($currentVersion.Build -gt 0) {
+            $fixtureVersion = "$($currentVersion.Major).$($currentVersion.Minor).$($currentVersion.Build - 1)"
+          } else {
+            $fixtureVersion = "$($currentVersion.Major).$($currentVersion.Minor - 1).0"
+          }
+          if ([version]$fixtureVersion -ge $currentVersion) {
+            throw "Upgrade fixture '$fixtureVersion' is not older than '$currentVersion'"
+          }
+          # Do not let a previous Gradle invocation leave a stale MSI beside
+          # the fixture; stale output was the source of false upgrade passes.
+          if (Test-Path '.\player\app\build\package') {
+            Remove-Item '.\player\app\build\package' -Recurse -Force
+          }
           .\gradlew.bat "-PappVersion=$fixtureVersion" :player:app:packageWindows --console=plain
           if ($LASTEXITCODE -ne 0) { throw "Upgrade fixture packaging failed with exit code $LASTEXITCODE" }
           $fixtures = @(Get-ChildItem '.\player\app\build\package\installer\*.exe')
@@ -151,7 +180,8 @@ jobs:
           }
           Copy-Item $fixtureMsis[0].FullName `
             (Join-Path $env:RUNNER_TEMP 'airplay-previous-version.msi')
-          "Previous-version upgrade fixture: $fixtureVersion" | Write-Host
+          "AIRPLAY_PREVIOUS_VERSION=$fixtureVersion" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "Previous-version upgrade fixture: $fixtureVersion (current: $currentVersion)" | Write-Host
       - name: Build Windows installer
         if: github.event_name != 'pull_request'
         shell: pwsh

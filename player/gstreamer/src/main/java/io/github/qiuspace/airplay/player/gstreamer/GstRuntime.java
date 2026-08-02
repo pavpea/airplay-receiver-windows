@@ -20,6 +20,8 @@ public final class GstRuntime {
     private static final List<String> REQUIRED_ELEMENTS = List.of(
             "appsrc", "appsink", "h264parse", "avdec_h264", "videoconvert",
             "avdec_alac", "avdec_aac", "audioconvert", "audioresample", "volume", "autoaudiosink");
+    private static final List<String> HARDWARE_VIDEO_ELEMENTS = List.of(
+            "d3d11h264dec", "d3d11convert", "d3d11download");
 
     private static volatile Path runtimeRoot;
 
@@ -55,6 +57,38 @@ public final class GstRuntime {
 
     public static Path runtimeRoot() {
         return runtimeRoot;
+    }
+
+    /**
+     * Returns true only when the complete Windows D3D11 decode/download path
+     * is available.  Hardware acceleration is deliberately optional: an
+     * incomplete driver/plugin installation must fall back to avdec_h264
+     * instead of making the receiver fail to start.
+     */
+    static boolean hardwareVideoDecodeAvailable() {
+        if (!Platform.isWindows()) {
+            return false;
+        }
+        try {
+            if (!Gst.isInitialized()) {
+                return false;
+            }
+        } catch (RuntimeException | LinkageError error) {
+            // A self-test or a headless JVM may not have loaded the native
+            // GStreamer library yet.  Hardware probing must never prevent the
+            // software path from being selected.
+            return false;
+        }
+        for (String elementName : HARDWARE_VIDEO_ELEMENTS) {
+            try (ElementFactory factory = ElementFactory.find(elementName)) {
+                if (factory == null) {
+                    return false;
+                }
+            } catch (RuntimeException | LinkageError error) {
+                return false;
+            }
+        }
+        return true;
     }
 
     public static synchronized RuntimeCheck verifyInstallation() {

@@ -9,14 +9,15 @@ final class VideoFormatNotifier {
     private int width;
     private int height;
 
-    synchronized void beforeBuffer(int nextWidth, int nextHeight, GstPlayerListener listener) {
+    synchronized boolean beforeBuffer(int nextWidth, int nextHeight, GstPlayerListener listener) {
         if (nextWidth <= 0 || nextHeight <= 0
                 || (nextWidth == width && nextHeight == height)) {
-            return;
+            return false;
         }
         listener.onVideoFormatChanged(nextWidth, nextHeight);
         width = nextWidth;
         height = nextHeight;
+        return true;
     }
 
     void frameReady(int frameWidth, int frameHeight, GstPlayerListener listener) {

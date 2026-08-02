@@ -4,6 +4,7 @@ import io.github.qiuspace.airplay.lib.internal.*;
 
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.util.Optional;
 
 /**
@@ -97,6 +98,11 @@ public class AirPlay {
     }
 
     public void decryptVideo(byte[] video) throws Exception {
+        decryptVideo(ByteBuffer.wrap(video));
+    }
+
+    /** Decrypts a video payload in-place without requiring a heap byte array. */
+    public void decryptVideo(ByteBuffer video) throws Exception {
         if (fairPlayVideoDecryptor == null) {
             if (!isFairPlayVideoDecryptorReady()) {
                 throw new IllegalStateException("FairPlayVideoDecryptor not ready!");

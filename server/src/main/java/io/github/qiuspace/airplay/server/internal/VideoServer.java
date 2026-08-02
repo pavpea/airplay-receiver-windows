@@ -5,7 +5,7 @@ import io.github.qiuspace.airplay.server.AirPlayConsumer;
 import io.github.qiuspace.airplay.server.internal.decoder.VideoDecoder;
 import io.github.qiuspace.airplay.server.internal.handler.video.VideoHandler;
 import io.netty.bootstrap.ServerBootstrap;
-import io.netty.buffer.UnpooledByteBufAllocator;
+import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
@@ -54,7 +54,10 @@ public final class VideoServer {
                     .childOption(ChannelOption.TCP_NODELAY, true)
                     .childOption(ChannelOption.SO_REUSEADDR, true)
                     .childOption(ChannelOption.SO_KEEPALIVE, true)
-                    .childOption(ChannelOption.ALLOCATOR, UnpooledByteBufAllocator.DEFAULT)
+                    // Reuse pooled direct buffers for the high-rate H.264
+                    // stream.  VideoDecoder retains a slice until the player
+                    // has synchronously copied it into GstBuffer.
+                    .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
                     .bind()
                     .sync()
                     .channel();

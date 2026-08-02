@@ -2,6 +2,10 @@ dependencies {
     implementation project(':lib')
     implementation project(':server')
 
+    // Retained video payloads cross the server/player boundary as ByteBufs;
+    // phase one still performs exactly one copy into a native GstBuffer.
+    implementation "io.netty:netty-buffer:$nettyVersion"
+
     implementation "net.java.dev.jna:jna:$jnaVersion"
     implementation "net.java.dev.jna:jna-platform:$jnaVersion"
     implementation "org.freedesktop.gstreamer:gst1-java-core:$gstreamerCoreVersion"

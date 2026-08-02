@@ -4,7 +4,6 @@ import io.github.qiuspace.airplay.lib.AirPlay;
 import io.github.qiuspace.airplay.server.AirPlayConsumer;
 import io.github.qiuspace.airplay.server.internal.packet.VideoPacket;
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
@@ -22,69 +21,92 @@ public class VideoHandler extends ChannelInboundHandlerAdapter {
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
         VideoPacket packet = (VideoPacket) msg;
-        try {
+        try (packet) {
+            ByteBuf payload = packet.getPayload();
             if (packet.getPayloadType() == 0) {
-                airPlay.decryptVideo(packet.getPayload());
-                preparePictureNALUnits(packet.getPayload());
-                dataConsumer.onVideo(packet.getPayload());
+                decryptVideo(payload);
+                preparePictureNALUnits(payload);
+                dataConsumer.onVideo(payload);
             } else if (packet.getPayloadType() == 1) {
-                byte[] spsPps = prepareSpsPpsNALUnits(packet.getPayload());
-                dataConsumer.onVideo(spsPps);
+                ByteBuf spsPps = prepareSpsPpsNALUnits(payload);
+                try {
+                    dataConsumer.onVideo(spsPps);
+                } finally {
+                    spsPps.release();
+                }
             }
         } catch (Exception e) {
             log.error(e.getMessage(), e);
         }
     }
 
-    private void preparePictureNALUnits(byte[] payload) {
-        int idx = 0;
-        while (idx < payload.length) {
-            int naluSize = (payload[idx + 3] & 0xFF) | ((payload[idx + 2] & 0xFF) << 8) | ((payload[idx + 1] & 0xFF) << 16) | ((payload[idx] & 0xFF) << 24);
-            if (naluSize == 1) {
-                return;
-            }
-            if (naluSize > 0) {
-                payload[idx] = 0;
-                payload[idx + 1] = 0;
-                payload[idx + 2] = 0;
-                payload[idx + 3] = 1;
-                idx += naluSize + 4;
-            }
-            if (payload.length - naluSize > 4) {
-                log.error("Video packet contains corrupted NAL unit. It might be decrypt error");
-                return;
-            }
+    /**
+     * Decrypts each native component without asking Netty to consolidate a
+     * composite buffer.  The FairPlay decryptor carries its CTR tail state
+     * across components, so this remains in-place even for fragmented input.
+     */
+    private void decryptVideo(ByteBuf payload) throws Exception {
+        int readerIndex = payload.readerIndex();
+        int length = payload.readableBytes();
+        if (payload.nioBufferCount() == 1) {
+            airPlay.decryptVideo(payload.internalNioBuffer(readerIndex, length));
+            return;
+        }
+        for (java.nio.ByteBuffer component : payload.nioBuffers(readerIndex, length)) {
+            airPlay.decryptVideo(component);
         }
     }
 
-    private byte[] prepareSpsPpsNALUnits(byte[] payload) {
-        ByteBuf payloadBuf = Unpooled.wrappedBuffer(payload);
-        payloadBuf.readerIndex(6);
+    private void preparePictureNALUnits(ByteBuf payload) {
+        int idx = payload.readerIndex();
+        int end = payload.writerIndex();
+        while (idx < end) {
+            if (end - idx < Integer.BYTES) {
+                log.error("Video packet contains a truncated NAL unit length");
+                return;
+            }
+            long naluSize = payload.getUnsignedInt(idx);
+            if (naluSize == 1) {
+                return;
+            }
+            if (naluSize <= 0 || naluSize > end - idx - Integer.BYTES) {
+                log.error("Video packet contains corrupted NAL unit. It might be decrypt error");
+                return;
+            }
+            payload.setInt(idx, 1);
+            idx += Integer.BYTES + (int) naluSize;
+        }
+    }
 
-        short spsLen = (short) payloadBuf.readUnsignedShort();
-        byte[] sequenceParameterSet = new byte[spsLen];
-        payloadBuf.readBytes(sequenceParameterSet);
+    private ByteBuf prepareSpsPpsNALUnits(ByteBuf payload) {
+        ByteBuf payloadBuf = payload.duplicate();
+        payloadBuf.readerIndex(payload.readerIndex());
+        if (payloadBuf.readableBytes() < 8) {
+            throw new IllegalArgumentException("SPS/PPS packet is too short");
+        }
+        payloadBuf.skipBytes(6);
+
+        int spsLen = payloadBuf.readUnsignedShort();
+        if (payloadBuf.readableBytes() < spsLen + 3) {
+            throw new IllegalArgumentException("SPS/PPS packet has an invalid SPS length");
+        }
+        ByteBuf sequenceParameterSet = payloadBuf.readSlice(spsLen);
 
         payloadBuf.skipBytes(1); // pps count
 
-        short ppsLen = (short) payloadBuf.readUnsignedShort();
-        byte[] pictureParameterSet = new byte[ppsLen];
-        payloadBuf.readBytes(pictureParameterSet);
+        int ppsLen = payloadBuf.readUnsignedShort();
+        if (payloadBuf.readableBytes() < ppsLen) {
+            throw new IllegalArgumentException("SPS/PPS packet has an invalid PPS length");
+        }
+        ByteBuf pictureParameterSet = payloadBuf.readSlice(ppsLen);
 
         int spsPpsLen = spsLen + ppsLen + 8;
         log.info("SPS PPS length: {}", spsPpsLen);
-        byte[] spsPps = new byte[spsPpsLen];
-        spsPps[0] = 0;
-        spsPps[1] = 0;
-        spsPps[2] = 0;
-        spsPps[3] = 1;
-        System.arraycopy(sequenceParameterSet, 0, spsPps, 4, spsLen);
-        spsPps[spsLen + 4] = 0;
-        spsPps[spsLen + 5] = 0;
-        spsPps[spsLen + 6] = 0;
-        spsPps[spsLen + 7] = 1;
-        System.arraycopy(pictureParameterSet, 0, spsPps, 8 + spsLen, ppsLen);
-
+        ByteBuf spsPps = payload.alloc().buffer(spsPpsLen, spsPpsLen);
+        spsPps.writeInt(1);
+        spsPps.writeBytes(sequenceParameterSet, sequenceParameterSet.readerIndex(), spsLen);
+        spsPps.writeInt(1);
+        spsPps.writeBytes(pictureParameterSet, pictureParameterSet.readerIndex(), ppsLen);
         return spsPps;
     }
 }

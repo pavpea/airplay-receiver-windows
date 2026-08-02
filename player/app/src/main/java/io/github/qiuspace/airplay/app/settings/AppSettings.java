@@ -2,6 +2,8 @@ package io.github.qiuspace.airplay.app.settings;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.awt.GraphicsEnvironment;
+import java.util.List;
 
 public record AppSettings(String receiverName,
                           DisplayMode displayMode,
@@ -16,10 +18,29 @@ public record AppSettings(String receiverName,
                           boolean receiverEnabled,
                           double volume) {
 
+    /** The only advertised AirPlay display refresh-rate capabilities. */
+    public static final List<Integer> FRAME_RATE_OPTIONS = List.of(60, 120);
+
     public static AppSettings defaults() {
         return new AppSettings(defaultReceiverName(), DisplayMode.PRIMARY_DISPLAY,
-                1920, 1080, 60, ThemeMode.SYSTEM, LanguageMode.SYSTEM,
+                1920, 1080, defaultFrameRate(), ThemeMode.SYSTEM, LanguageMode.SYSTEM,
                 false, true, true, true, 0.5);
+    }
+
+    /** Uses the primary display refresh rate, capped to the advertised 60/120 options. */
+    public static int defaultFrameRate() {
+        try {
+            if (!GraphicsEnvironment.isHeadless()) {
+                int refresh = GraphicsEnvironment.getLocalGraphicsEnvironment()
+                        .getDefaultScreenDevice().getDisplayMode().getRefreshRate();
+                if (refresh >= 120) {
+                    return 120;
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // Headless/remote sessions may not expose a display mode.
+        }
+        return 60;
     }
 
     public AppSettings normalized() {
@@ -33,11 +54,16 @@ public record AppSettings(String receiverName,
                 displayMode == null ? DisplayMode.PRIMARY_DISPLAY : displayMode,
                 clamp(customWidth, 640, 7680),
                 clamp(customHeight, 480, 4320),
-                clamp(maxFps, 15, 60),
+                normalizeFrameRate(maxFps),
                 theme == null ? ThemeMode.SYSTEM : theme,
                 language == null ? LanguageMode.SYSTEM : language,
                 startWithWindows, bringToFront, closeToTray, true,
                 Math.max(0, Math.min(1, volume)));
+    }
+
+    /** Maps legacy/custom values to the nearest supported capability. */
+    public static int normalizeFrameRate(int fps) {
+        return fps >= 90 ? 120 : 60;
     }
 
     public AppSettings withVolume(double newVolume) {
