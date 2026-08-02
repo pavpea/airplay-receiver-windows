@@ -21,6 +21,8 @@ window, and a Windows tray workflow in one lightweight application.
   capability, 60 Hz or 120 Hz frame rate, startup behavior, and tray behavior.
 - Prefer Windows D3D11 H.264 hardware decoding when the installed driver and
   private GStreamer runtime support it, with an automatic software fallback.
+  The Windows package validates that the D3D11 plug-in is present before it is
+  published.
 - Keep the high-rate video path bounded and reference-counted: network payloads
   stay in Netty ByteBufs through decryption/NALU preparation and are copied only
   once into a native GStreamer buffer.
@@ -100,7 +102,9 @@ explicitly stated by a release.
   source aspect ratio and avoid requesting a stream far above the display
   capability. On supported Windows systems the log records whether D3D11
   decoding was selected; otherwise the receiver uses the bounded software
-  decoder path.
+  decoder path. `renderedFps` in the periodic performance entry is the actual
+  decoded/rendered rate; `maxFPS` is only an upper bound requested from the
+  Apple sender and cannot force a 120 fps source.
 - **A previous process blocks an upgrade/uninstall:** the installer asks for
   confirmation, sends a normal close request, waits up to 15 seconds, and then
   uses a hidden fallback termination if needed.

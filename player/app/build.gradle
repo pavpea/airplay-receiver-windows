@@ -62,10 +62,16 @@ def gstreamerRuntimeFiles = [
         'bin/gstaudio-1.0-0.dll',
         'bin/gstbase-1.0-0.dll',
         'bin/gstcodecparsers-1.0-0.dll',
+        'bin/gstcodecs-1.0-0.dll',
         'bin/gstpbutils-1.0-0.dll',
         'bin/gstreamer-1.0-0.dll',
         'bin/gsttag-1.0-0.dll',
         'bin/gstvideo-1.0-0.dll',
+        // Shared GStreamer Direct3D support libraries required by
+        // gstd3d11.dll (the plug-in itself is staged below).
+        'bin/gstd3d11-*.dll',
+        'bin/gstd3dshader-*.dll',
+        'bin/gstdxva-*.dll',
         'bin/gst-inspect-1.0.exe',
         'bin/intl-*.dll',
         'bin/orc-*.dll',
@@ -81,9 +87,10 @@ def gstreamerRuntimeFiles = [
         'lib/gstreamer-1.0/gstvideoparsersbad.dll',
         'lib/gstreamer-1.0/gstlibav.dll',
         'lib/gstreamer-1.0/gstvideoconvertscale.dll',
-        // Optional Windows hardware decode/transfer path.  The application
-        // checks these factories and falls back cleanly when a driver lacks
-        // D3D11 support.
+        // Windows hardware decode/transfer path.  A driver without a usable
+        // D3D11 adapter still falls back at runtime, but the product runtime
+        // must always carry the plug-in so hardware-capable machines do not
+        // silently lose acceleration because of packaging.
         'lib/gstreamer-1.0/gstd3d11.dll',
         'lib/gstreamer-1.0/gstaudioconvert.dll',
         'lib/gstreamer-1.0/gstaudioresample.dll',
@@ -105,6 +112,7 @@ def requiredGstreamerFiles = [
         'lib/gstreamer-1.0/gstvideoparsersbad.dll',
         'lib/gstreamer-1.0/gstlibav.dll',
         'lib/gstreamer-1.0/gstvideoconvertscale.dll',
+        'lib/gstreamer-1.0/gstd3d11.dll',
         'lib/gstreamer-1.0/gstaudioconvert.dll',
         'lib/gstreamer-1.0/gstaudioresample.dll',
         'lib/gstreamer-1.0/gstvolume.dll',

@@ -27,4 +27,20 @@ class PropertyListUtilTest {
         assertEquals(30L, display.get("maxFPS").toJavaObject(Long.class));
         assertEquals(30L, display.get("refreshRate").toJavaObject(Long.class));
     }
+
+    @Test
+    void advertisesTheConfigured120HzCapability() throws Exception {
+        AirPlayConfig config = new AirPlayConfig();
+        config.setMirrorOnly(true);
+        config.setWidth(2560);
+        config.setHeight(1440);
+        config.setFps(120);
+
+        NSDictionary info = (NSDictionary) BinaryPropertyListParser.parse(
+                PropertyListUtil.prepareInfoResponse(config));
+        NSDictionary display = (NSDictionary) ((com.dd.plist.NSArray) info.get("displays")).objectAtIndex(0);
+
+        assertEquals(120L, display.get("maxFPS").toJavaObject(Long.class));
+        assertEquals(120L, display.get("refreshRate").toJavaObject(Long.class));
+    }
 }

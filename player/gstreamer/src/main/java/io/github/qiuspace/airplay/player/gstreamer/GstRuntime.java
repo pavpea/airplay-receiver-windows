@@ -60,12 +60,12 @@ public final class GstRuntime {
     }
 
     /**
-     * Returns true only when the complete Windows D3D11 decode/download path
-     * is available.  Hardware acceleration is deliberately optional: an
-     * incomplete driver/plugin installation must fall back to avdec_h264
-     * instead of making the receiver fail to start.
+     * Returns whether the packaged runtime exposes the complete D3D11 H.264
+     * path.  A factory being present does not guarantee that a driver can
+     * create a device, so GstPlayer still keeps its parse-time fallback when
+     * a particular Windows driver cannot create the hardware pipeline.
      */
-    static boolean hardwareVideoDecodeAvailable() {
+    public static boolean hardwareVideoDecodeAvailable() {
         if (!Platform.isWindows()) {
             return false;
         }

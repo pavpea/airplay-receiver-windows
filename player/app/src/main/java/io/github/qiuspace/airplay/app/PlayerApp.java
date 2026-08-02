@@ -84,6 +84,10 @@ public final class PlayerApp {
         try (GstPlayer ignored = new GstPlayer()) {
             // Construct all production pipelines so missing properties or plug-ins fail the smoke test.
         }
-        System.out.println("AirPlay Receiver self-test passed. GStreamer: " + runtime.root());
+        String result = "AirPlay Receiver self-test passed. GStreamer: " + runtime.root()
+                + "; D3D11 hardware decoder available: "
+                + GstRuntime.hardwareVideoDecodeAvailable();
+        LoggerFactory.getLogger(PlayerApp.class).info(result);
+        System.out.println(result);
     }
 }

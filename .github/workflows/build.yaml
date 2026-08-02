@@ -127,15 +127,15 @@ jobs:
               throw "GStreamer element '$element' failed to load: $($inspection -join [Environment]::NewLine)"
             }
           }
-          # D3D11 is an optional acceleration path.  Keep the software
-          # decoder as the guaranteed fallback, but report whether the
-          # packaged runtime can use hardware decode on this runner.
+          # The application still falls back to avdec_h264 when a particular
+          # driver cannot create a D3D11 device, but the packaged runtime must
+          # contain the plug-in.  Otherwise a hardware-capable installation
+          # would be permanently forced onto software decoding.
           $d3d11Inspection = & "$gstRoot\bin\gst-inspect-1.0.exe" d3d11h264dec 2>&1
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host 'D3D11 H.264 decoder is available in the packaged runtime.'
-          } else {
-            Write-Warning 'D3D11 H.264 decoder is unavailable; the application will use avdec_h264.'
+          if ($LASTEXITCODE -ne 0) {
+            throw "The packaged GStreamer runtime is missing the D3D11 H.264 decoder: $($d3d11Inspection -join [Environment]::NewLine)"
           }
+          Write-Host 'D3D11 H.264 decoder is available in the packaged runtime.'
       - name: Verify app image
         shell: pwsh
         run: |

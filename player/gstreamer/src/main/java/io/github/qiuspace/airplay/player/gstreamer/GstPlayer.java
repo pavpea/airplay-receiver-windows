@@ -63,6 +63,7 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
     private volatile boolean muted;
     private volatile ScheduledFuture<?> memoryReclaim;
     private volatile ScheduledFuture<?> metricsLogger;
+    private volatile long metricsWindowStartedNanos = System.nanoTime();
 
     public GstPlayer() {
         GstRuntime.RuntimeCheck runtime = GstRuntime.configure();
@@ -511,15 +512,23 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
     }
 
     private void logVideoMetrics() {
+        long now = System.nanoTime();
+        long started = metricsWindowStartedNanos;
+        metricsWindowStartedNanos = now;
+        double windowSeconds = Math.max(0.001, (now - started) / 1_000_000_000d);
         VideoMetrics.Snapshot snapshot = videoMetrics.snapshotAndReset();
         if (snapshot.hasVideo()) {
             log.info("Video performance: compressedBuffers={}, compressedMiB={}, nativeBuffers={}, "
-                            + "nativeMiB={}, renderedFrames={}, formatChanges={}, rejectedBuffers={}",
+                            + "nativeMiB={}, inputFps={}, renderedFrames={}, renderedFps={}, "
+                            + "formatChanges={}, rejectedBuffers={}",
                     snapshot.compressedBuffers(),
                     String.format(java.util.Locale.ROOT, "%.1f", snapshot.compressedBytes() / 1024d / 1024d),
                     snapshot.nativeBuffers(),
                     String.format(java.util.Locale.ROOT, "%.1f", snapshot.nativeBytes() / 1024d / 1024d),
-                    snapshot.renderedFrames(), snapshot.formatChanges(), snapshot.rejectedBuffers());
+                    String.format(java.util.Locale.ROOT, "%.1f", snapshot.compressedBuffers() / windowSeconds),
+                    snapshot.renderedFrames(),
+                    String.format(java.util.Locale.ROOT, "%.1f", snapshot.renderedFrames() / windowSeconds),
+                    snapshot.formatChanges(), snapshot.rejectedBuffers());
         }
     }
 

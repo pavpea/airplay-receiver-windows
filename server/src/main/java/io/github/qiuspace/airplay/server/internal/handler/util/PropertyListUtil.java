@@ -56,6 +56,10 @@ public class PropertyListUtil {
 
         NSArray displays = new NSArray(display);
 
+        log.info("AirPlay display capability: {}x{} @ {}fps (maxFPS={}, refreshRate={})",
+                airPlayConfig.getWidth(), airPlayConfig.getHeight(), airPlayConfig.getFps(),
+                airPlayConfig.getFps(), airPlayConfig.getFps());
+
         NSDictionary response = new NSDictionary();
         response.put("audioFormats", audioFormats);
         response.put("audioLatencies", audioLatencies);
