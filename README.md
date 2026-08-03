@@ -134,6 +134,32 @@ used by the desktop receiver):
 .\gradlew.bat :player:app:packageWindows --console=plain
 ```
 
+### One-time Windows packaging setup
+
+WiX Toolset is the Windows Installer compiler/linker used by `jpackage` to
+turn the application image into the MSI/EXE installer. It is not bundled with
+the JDK, and GitHub Actions provides it only on the hosted Windows runner. A
+non-admin portable installation is sufficient for local builds: download the
+[WiX 3.14 binaries](https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip),
+extract them to a user-writable directory, and expose that directory in the
+current PowerShell session:
+
+```powershell
+$wix = Join-Path $env:LOCALAPPDATA 'Programs\WiX Toolset v3.14'
+$env:WIX = $wix
+$env:PATH = "$wix;$env:PATH"
+$env:GSTREAMER_RUNTIME_DIR = 'C:\path\to\gstreamer-runtime'
+```
+
+To keep these values for future terminals, set them once with
+`[Environment]::SetEnvironmentVariable(<name>, <value>, 'User')`. The full
+GStreamer SDK can occupy several gigabytes because it includes headers,
+development libraries, debug files, and every plugin. It is only a staging
+source; `stageGStreamerRuntime` copies the small private runtime needed by this
+application. After that copy has been preserved, the full SDK may be
+uninstalled. Do not remove the directory selected by
+`GSTREAMER_RUNTIME_DIR` until staging or packaging is complete.
+
 The installer is generated at:
 
 `player/app/build/package/installer/AirPlay-Receiver-<version>-windows-x64-setup.exe`

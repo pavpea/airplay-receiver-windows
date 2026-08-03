@@ -96,6 +96,28 @@ Windows 打包前设置 `GSTREAMER_RUNTIME_DIR`，然后执行：
 .\gradlew.bat :player:app:packageWindows --console=plain
 ```
 
+### Windows 本地打包的一次性准备
+
+WiX Toolset 是 `jpackage` 用来把应用镜像编译为 MSI/EXE 安装包的
+Windows Installer 编译和链接工具。它不随 JDK 提供，只有 GitHub Actions
+的 Windows Runner 预装了它。本机不需要管理员权限即可使用便携版：从
+[WiX 3.14 官方二进制包](https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip)
+下载并解压到用户可写目录，然后在 PowerShell 中设置：
+
+```powershell
+$wix = Join-Path $env:LOCALAPPDATA 'Programs\WiX Toolset v3.14'
+$env:WIX = $wix
+$env:PATH = "$wix;$env:PATH"
+$env:GSTREAMER_RUNTIME_DIR = 'C:\path\to\gstreamer-runtime'
+```
+
+如果希望以后打开终端也自动生效，可以使用
+`[Environment]::SetEnvironmentVariable(<名称>, <值>, 'User')` 保存这些变量。
+完整 GStreamer SDK 之所以有几个 GB，是因为它还包含头文件、开发库、调试
+文件和全部插件；它只是构建时的来源。`stageGStreamerRuntime` 会复制本应用
+实际需要的精简私有运行时，完成复制后可以卸载完整 SDK。不要在 staging 或
+打包完成前删除 `GSTREAMER_RUNTIME_DIR` 指向的目录。
+
 安装包输出位置：
 
 `player/app/build/package/installer/AirPlay-Receiver-<version>-windows-x64-setup.exe`
