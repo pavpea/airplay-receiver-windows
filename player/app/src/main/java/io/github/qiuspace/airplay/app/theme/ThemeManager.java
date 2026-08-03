@@ -7,7 +7,10 @@ import io.github.qiuspace.airplay.app.platform.WindowsIntegration;
 import io.github.qiuspace.airplay.app.settings.AppSettings;
 
 import javax.swing.SwingUtilities;
+import java.awt.Component;
+import java.awt.KeyboardFocusManager;
 import java.awt.Window;
+import java.util.Objects;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -21,6 +24,7 @@ public final class ThemeManager implements AutoCloseable {
     });
     private volatile AppSettings.ThemeMode mode;
     private volatile boolean dark;
+    private volatile boolean initialized;
 
     public ThemeManager(AppSettings.ThemeMode mode) {
         System.setProperty("flatlaf.useWindowDecorations", "true");
@@ -30,14 +34,20 @@ public final class ThemeManager implements AutoCloseable {
         watcher.scheduleWithFixedDelay(this::pollSystemTheme, 2, 2, TimeUnit.SECONDS);
     }
 
-    public void apply(AppSettings.ThemeMode nextMode) {
+    public synchronized void apply(AppSettings.ThemeMode nextMode) {
+        Objects.requireNonNull(nextMode, "nextMode");
         mode = nextMode;
         boolean nextDark = switch (nextMode) {
             case DARK -> true;
             case LIGHT -> false;
             case SYSTEM -> WindowsIntegration.isSystemDarkTheme();
         };
+        if (initialized && nextDark == dark) {
+            return;
+        }
         applyLookAndFeel(nextDark);
+        dark = nextDark;
+        initialized = true;
     }
 
     public boolean isDark() {
@@ -53,13 +63,19 @@ public final class ThemeManager implements AutoCloseable {
         if (mode == AppSettings.ThemeMode.SYSTEM) {
             boolean systemDark = WindowsIntegration.isSystemDarkTheme();
             if (systemDark != dark) {
-                SwingUtilities.invokeLater(() -> applyLookAndFeel(systemDark));
+                SwingUtilities.invokeLater(() -> {
+                    if (mode == AppSettings.ThemeMode.SYSTEM) {
+                        apply(AppSettings.ThemeMode.SYSTEM);
+                    }
+                });
             }
         }
     }
 
     private void applyLookAndFeel(boolean useDark) {
-        dark = useDark;
+        Component focusOwner = KeyboardFocusManager
+                .getCurrentKeyboardFocusManager()
+                .getFocusOwner();
         if (useDark) {
             FlatDarkLaf.setup();
         } else {
@@ -69,5 +85,20 @@ public final class ThemeManager implements AutoCloseable {
         for (Window window : Window.getWindows()) {
             SwingUtilities.updateComponentTreeUI(window);
         }
+        restoreFocusAfterUiUpdate(focusOwner);
+    }
+
+    static void restoreFocusAfterUiUpdate(Component focusOwner) {
+        if (focusOwner == null) {
+            return;
+        }
+        SwingUtilities.invokeLater(() -> {
+            if (focusOwner.isDisplayable()
+                    && focusOwner.isShowing()
+                    && focusOwner.isEnabled()
+                    && focusOwner.isFocusable()) {
+                focusOwner.requestFocusInWindow();
+            }
+        });
     }
 }
