@@ -45,7 +45,8 @@ final class PlaybackTitleBar extends JMenuBar {
     private final JLabel sessionLabel =
             new JLabel(new FlatSVGIcon("icons/app-icon.svg", 20, 20));
     private final java.awt.Component captionGap = Box.createHorizontalStrut(8);
-    private final JLabel formatLabel = new JLabel("—");
+    private final JLabel detailsLabel = new JLabel(
+            new FlatSVGIcon("icons/info.svg", 18, 18));
     private final JToggleButton muteButton = toggleButton("icons/volume.svg", 18);
     private final JSlider popupVolume;
     private final JPopupMenu volumePopup = new JPopupMenu();
@@ -53,6 +54,7 @@ final class PlaybackTitleBar extends JMenuBar {
     private final JToggleButton alwaysOnTopButton = toggleButton("icons/pin.svg", 18);
     private final Timer showVolumeTimer;
     private final Timer hideVolumeTimer;
+    private boolean detailsAvailable;
 
     private String muteText = "Mute";
     private String unmuteText = "Unmute";
@@ -82,12 +84,13 @@ final class PlaybackTitleBar extends JMenuBar {
         caption.putClientProperty(FlatClientProperties.COMPONENT_TITLE_BAR_CAPTION, true);
         sessionLabel.setName("playbackBar.session");
         sessionLabel.setAlignmentY(CENTER_ALIGNMENT);
-        formatLabel.setName("playbackBar.format");
-        formatLabel.setAlignmentY(CENTER_ALIGNMENT);
-        formatLabel.putClientProperty("FlatLaf.styleClass", "small");
+        detailsLabel.setName("playbackBar.details");
+        detailsLabel.setAlignmentY(CENTER_ALIGNMENT);
+        detailsLabel.putClientProperty("FlatLaf.styleClass", "small");
+        detailsLabel.setVisible(false);
         caption.add(sessionLabel);
         caption.add(captionGap);
-        caption.add(formatLabel);
+        caption.add(detailsLabel);
         add(caption);
         add(Box.createHorizontalGlue());
 
@@ -141,13 +144,21 @@ final class PlaybackTitleBar extends JMenuBar {
     }
 
     void setVideoFormat(int width, int height) {
-        formatLabel.setText(width + " × " + height);
+        setPlaybackDetails(width + "x" + height);
+    }
+
+    void setPlaybackDetails(String details) {
+        detailsLabel.setToolTipText(details);
+        detailsAvailable = details != null && !details.isBlank();
+        detailsLabel.setVisible(detailsAvailable);
         revalidate();
         repaint();
     }
 
     void clearVideoFormat() {
-        formatLabel.setText("—");
+        detailsLabel.setToolTipText(null);
+        detailsAvailable = false;
+        detailsLabel.setVisible(false);
         revalidate();
         repaint();
     }
@@ -164,7 +175,7 @@ final class PlaybackTitleBar extends JMenuBar {
     }
 
     boolean isFormatVisible() {
-        return formatLabel.isVisible();
+        return detailsLabel.isVisible();
     }
 
     AbstractButton muteButton() {
@@ -215,15 +226,15 @@ final class PlaybackTitleBar extends JMenuBar {
 
     private void applyResponsiveLayout(int width) {
         int fullCaptionWidth = sessionLabel.getPreferredSize().width
-                + captionGap.getPreferredSize().width + formatLabel.getPreferredSize().width;
+                + captionGap.getPreferredSize().width + detailsLabel.getPreferredSize().width;
         int controlsWidth = CONTROL_SIZE * 2 + CONTROL_GAP;
         int fixedWidth = LEFT_INSET + NATIVE_GROUP_GAP + controlsWidth;
         int remaining = width - fixedWidth;
         boolean showSession = remaining >= sessionLabel.getPreferredSize().width + CONTENT_GAP;
-        boolean showFormat = showSession
+        boolean showFormat = detailsAvailable && showSession
                 && remaining >= fullCaptionWidth + CONTENT_GAP + (CONTROL_GAP * 2);
         sessionLabel.setVisible(showSession);
-        formatLabel.setVisible(showFormat);
+        detailsLabel.setVisible(showFormat);
         captionGap.setVisible(showFormat);
         caption.setVisible(showSession || showFormat);
     }

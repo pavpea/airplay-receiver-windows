@@ -63,7 +63,13 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
     private volatile boolean muted;
     private volatile ScheduledFuture<?> memoryReclaim;
     private volatile ScheduledFuture<?> metricsLogger;
+    private volatile ScheduledFuture<?> playbackMetricsLogger;
     private volatile long metricsWindowStartedNanos = System.nanoTime();
+    private volatile int currentVideoWidth;
+    private volatile int currentVideoHeight;
+    private volatile PlaybackMetrics.DecoderPath decoderPath = PlaybackMetrics.DecoderPath.SOFTWARE;
+    private volatile long previousUiRenderedFrames;
+    private volatile long previousUiMetricsNanos = System.nanoTime();
 
     public GstPlayer() {
         GstRuntime.RuntimeCheck runtime = GstRuntime.configure();
@@ -81,6 +87,8 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
         });
         metricsLogger = maintenanceExecutor.scheduleAtFixedRate(this::logVideoMetrics,
                 30, 30, TimeUnit.SECONDS);
+        playbackMetricsLogger = maintenanceExecutor.scheduleAtFixedRate(
+                this::publishPlaybackMetrics, 2, 2, TimeUnit.SECONDS);
 
         video = createVideoPipeline();
         installVideoComponent(video.component());
@@ -219,6 +227,10 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
         if (logger != null) {
             logger.cancel(false);
         }
+        ScheduledFuture<?> playbackLogger = playbackMetricsLogger;
+        if (playbackLogger != null) {
+            playbackLogger.cancel(false);
+        }
         synchronized (audioLock) {
             releaseAudioPipeline(alacAudio);
             releaseAudioPipeline(aacEldAudio);
@@ -232,6 +244,9 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
 
     private VideoPipeline createVideoPipeline() {
         boolean hardwareDecode = GstRuntime.hardwareVideoDecodeAvailable();
+        decoderPath = hardwareDecode
+                ? PlaybackMetrics.DecoderPath.HARDWARE
+                : PlaybackMetrics.DecoderPath.SOFTWARE;
         Pipeline pipeline;
         try {
             pipeline = (Pipeline) Gst.parseLaunch(videoPipelineDescription(hardwareDecode));
@@ -242,6 +257,7 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
             }
             log.warn("D3D11 video decoder could not be created; falling back to software H.264", error);
             pipeline = (Pipeline) Gst.parseLaunch(videoPipelineDescription(false));
+            decoderPath = PlaybackMetrics.DecoderPath.SOFTWARE;
         }
         AppSrc source = (AppSrc) pipeline.getElementByName("video-source");
         configureSource(source,
@@ -484,6 +500,8 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
         }
         try {
             if (videoFormatNotifier.beforeBuffer(width, height, listener)) {
+                currentVideoWidth = width;
+                currentVideoHeight = height;
                 videoMetrics.formatChanged();
             }
         } catch (RuntimeException error) {
@@ -530,6 +548,22 @@ public final class GstPlayer implements AirPlayConsumer, AutoCloseable {
                     String.format(java.util.Locale.ROOT, "%.1f", snapshot.renderedFrames() / windowSeconds),
                     snapshot.formatChanges(), snapshot.rejectedBuffers());
         }
+    }
+
+    private void publishPlaybackMetrics() {
+        int width = currentVideoWidth;
+        int height = currentVideoHeight;
+        if (width <= 0 || height <= 0 || closed.get()) {
+            return;
+        }
+        long now = System.nanoTime();
+        VideoMetrics.Snapshot snapshot = videoMetrics.snapshot();
+        double seconds = Math.max(0.001, (now - previousUiMetricsNanos) / 1_000_000_000d);
+        double renderedFps = (snapshot.renderedFrames() - previousUiRenderedFrames) / seconds;
+        previousUiRenderedFrames = snapshot.renderedFrames();
+        previousUiMetricsNanos = now;
+        listener.onPlaybackMetrics(new PlaybackMetrics(
+                width, height, Math.max(0, renderedFps), "H.264", decoderPath));
     }
 
     private void runOnEdtAndWait(Runnable action) {

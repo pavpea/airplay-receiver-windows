@@ -46,6 +46,17 @@ final class VideoMetrics {
                 renderedFrames.sumThenReset());
     }
 
+    Snapshot snapshot() {
+        return new Snapshot(
+                compressedBuffers.sum(),
+                compressedBytes.sum(),
+                nativeBuffers.sum(),
+                nativeBytes.sum(),
+                rejectedBuffers.sum(),
+                formatChanges.sum(),
+                renderedFrames.sum());
+    }
+
     record Snapshot(long compressedBuffers, long compressedBytes,
                     long nativeBuffers, long nativeBytes,
                     long rejectedBuffers, long formatChanges,

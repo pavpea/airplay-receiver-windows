@@ -11,6 +11,7 @@ import io.github.qiuspace.airplay.app.platform.NetworkInfo;
 import io.github.qiuspace.airplay.app.platform.ProcessExit;
 import io.github.qiuspace.airplay.app.platform.WindowsIntegration;
 import io.github.qiuspace.airplay.app.settings.AppSettings;
+import io.github.qiuspace.airplay.player.gstreamer.PlaybackMetrics;
 import io.github.qiuspace.airplay.server.ServerState;
 import io.github.qiuspace.airplay.server.SessionInfo;
 
@@ -125,6 +126,11 @@ public final class MainFrame extends JFrame implements ReceiverView {
     @Override
     public void onVideoFrameReady(int width, int height) {
         playbackWindow.videoFrameReady(width, height);
+    }
+
+    @Override
+    public void onPlaybackMetrics(PlaybackMetrics metrics) {
+        playbackWindow.updatePlaybackMetrics(metrics);
     }
 
     @Override
@@ -411,12 +417,12 @@ public final class MainFrame extends JFrame implements ReceiverView {
                 java.awt.DisplayMode display = GraphicsEnvironment.getLocalGraphicsEnvironment()
                         .getDefaultScreenDevice().getDisplayMode();
                 yield i18n.text("display.primary", String.valueOf(display.getWidth()),
-                        String.valueOf(display.getHeight()), String.valueOf(appSettings.maxFps()));
+                        String.valueOf(display.getHeight()), String.valueOf(appSettings.resolvedFrameRate()));
             }
-            case HD_720 -> "1280 × 720  ·  " + appSettings.maxFps() + "fps";
-            case FULL_HD_1080 -> "1920 × 1080  ·  " + appSettings.maxFps() + "fps";
+            case HD_720 -> "1280 × 720  ·  " + appSettings.resolvedFrameRate() + "fps";
+            case FULL_HD_1080 -> "1920 × 1080  ·  " + appSettings.resolvedFrameRate() + "fps";
             case CUSTOM -> appSettings.customWidth() + " × " + appSettings.customHeight()
-                    + "  ·  " + appSettings.maxFps() + "fps";
+                    + "  ·  " + appSettings.resolvedFrameRate() + "fps";
         };
     }
 

@@ -7,6 +7,7 @@ import io.github.qiuspace.airplay.app.i18n.I18n;
 import io.github.qiuspace.airplay.app.platform.WindowsAspectRatioWindowResizer;
 import io.github.qiuspace.airplay.app.settings.AppSettings;
 import io.github.qiuspace.airplay.server.SessionInfo;
+import io.github.qiuspace.airplay.player.gstreamer.PlaybackMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -57,6 +58,7 @@ final class PlaybackWindow extends JFrame {
     private int sourceHeight;
     private int pendingFrameWidth;
     private int pendingFrameHeight;
+    private PlaybackMetrics playbackMetrics;
     private Rectangle normalBounds;
     private Rectangle pendingNormalBounds;
     private Dimension stableChrome = new Dimension(0, PlaybackTitleBar.HEIGHT);
@@ -107,6 +109,7 @@ final class PlaybackWindow extends JFrame {
         sessionSettings = null;
         sourceWidth = 0;
         sourceHeight = 0;
+        playbackMetrics = null;
         pendingNormalBounds = null;
         rotationModel.reset();
         displayAnchor = null;
@@ -143,6 +146,7 @@ final class PlaybackWindow extends JFrame {
         sourceWidth = width;
         sourceHeight = height;
         titleControls.setVideoFormat(width, height);
+        updateDetailsTooltip();
         ensureDisplayable();
         ensureAspectResizer();
         if (firstFormat) {
@@ -167,6 +171,16 @@ final class PlaybackWindow extends JFrame {
         }
     }
 
+    void updatePlaybackMetrics(PlaybackMetrics metrics) {
+        if (metrics == null) {
+            return;
+        }
+        playbackMetrics = metrics;
+        if (activeSession) {
+            updateDetailsTooltip();
+        }
+    }
+
     void refreshTexts() {
         setTitle(playbackTitle());
         titleControls.setTexts(
@@ -177,6 +191,7 @@ final class PlaybackWindow extends JFrame {
         titleControls.setMuted(controller.muted());
         titleControls.refreshTheme();
         refreshPlaybackTitleBarTheme();
+        updateDetailsTooltip();
         if (sessionAddress != null) {
             titleControls.setSessionToolTip(i18n.text("player.device", sessionAddress));
         }
@@ -219,6 +234,26 @@ final class PlaybackWindow extends JFrame {
         player.add(transitionVeil);
         player.setComponentZOrder(transitionVeil, 0);
         setContentPane(player);
+    }
+
+    private void updateDetailsTooltip() {
+        if (sourceWidth <= 0 || sourceHeight <= 0) {
+            titleControls.clearVideoFormat();
+            return;
+        }
+        PlaybackMetrics metrics = playbackMetrics;
+        double fps = metrics == null ? 0 : metrics.framesPerSecond();
+        String decoder = metrics != null
+                && metrics.decoderPath() == PlaybackMetrics.DecoderPath.HARDWARE
+                ? i18n.text("player.decoderHardware")
+                : i18n.text("player.decoderSoftware");
+        String tooltip = "<html>"
+                + i18n.text("player.detailsFormat", sourceWidth, sourceHeight) + "<br>"
+                + i18n.text("player.detailsMetrics", fps) + "<br>"
+                + i18n.text("player.detailsCodec") + "<br>"
+                + i18n.text("player.detailsDecoder", decoder)
+                + "</html>";
+        titleControls.setPlaybackDetails(tooltip);
     }
 
     private void installBehavior() {

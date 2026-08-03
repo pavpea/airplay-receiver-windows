@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import javax.swing.DefaultBoundedRangeModel;
 import javax.swing.JSlider;
 import javax.swing.JPanel;
+import javax.swing.JLabel;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
@@ -59,6 +60,24 @@ class PlaybackTitleBarTest {
         assertThat(bar.isFormatVisible()).isTrue();
         assertThat(find(bar, "playbackBar.inlineVolume", JSlider.class)).isNull();
         assertThat(find(bar, "playbackBar.compactVolume", Component.class)).isNull();
+    }
+
+    @Test
+    void detailsIconUsesThePlaybackTooltipInsteadOfAResolutionCaption() throws Exception {
+        PlaybackTitleBar bar = onEdt(() -> titleBar(new AtomicInteger()));
+
+        onEdt(() -> {
+            bar.setPlaybackDetails("<html>Resolution: 1920x1080<br>Frame rate: 60.0 fps</html>");
+            bar.setSize(640, PlaybackTitleBar.HEIGHT);
+            bar.doLayout();
+            return null;
+        });
+
+        assertThat(bar.isFormatVisible()).isTrue();
+        assertThat(bar.getComponent(0)).isInstanceOf(JPanel.class);
+        assertThat(find(bar, "playbackBar.details", JLabel.class)).isNotNull();
+        assertThat(find(bar, "playbackBar.details", JLabel.class).getToolTipText())
+                .contains("1920x1080", "60.0 fps");
     }
 
     @Test

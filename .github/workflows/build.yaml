@@ -142,46 +142,75 @@ jobs:
           $appImage = '.\player\app\build\package\staged-image\AirPlay Receiver\AirPlay Receiver.exe'
           $selfTest = Start-Process -FilePath $appImage -Wait -PassThru -ArgumentList '--self-test'
           if ($selfTest.ExitCode -ne 0) { throw "app-image self-test failed with exit code $($selfTest.ExitCode)" }
-      - name: Build previous-version upgrade fixture
+      - name: Cache previous release installer
         if: github.event_name != 'pull_request'
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}\airplay-previous-version.exe
+          key: airplay-previous-release-${{ github.ref_name }}-${{ hashFiles('build.gradle') }}
+      - name: Resolve and download real previous release
+        if: github.event_name != 'pull_request'
+        id: resolve_previous
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          # Build a real MSI from the immediately preceding semantic version.
-          # On the first 1.0.0 release there is no previous artifact yet, so a
-          # synthetic 0.9.0 fixture is used.  This keeps the test independent
-          # of the deleted legacy repository while exercising the same
-          # UpgradeCode, install directory and installer preference registry.
+          # Always exercise the user-facing installer from the highest older
+          # stable GitHub Release. Never build a synthetic version fixture.
           $versionMatch = Select-String -Path '.\build.gradle' -Pattern "^\s*version\s*=\s*'([^']+)'\s*$"
-          if (!$versionMatch) { throw 'Unable to read the current Gradle version for the upgrade fixture' }
+          if (!$versionMatch) { throw 'Unable to read the current Gradle version' }
           $currentVersion = [version]$versionMatch.Matches[0].Groups[1].Value
-          if ($currentVersion -le [version]'1.0.0') {
-            $fixtureVersion = '0.9.0'
-          } elseif ($currentVersion.Build -gt 0) {
-            $fixtureVersion = "$($currentVersion.Major).$($currentVersion.Minor).$($currentVersion.Build - 1)"
-          } else {
-            $fixtureVersion = "$($currentVersion.Major).$($currentVersion.Minor - 1).0"
+          $headers = @{
+            Accept = 'application/vnd.github+json'
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            'User-Agent' = 'airplay-receiver-ci'
           }
-          if ([version]$fixtureVersion -ge $currentVersion) {
-            throw "Upgrade fixture '$fixtureVersion' is not older than '$currentVersion'"
+          $releases = Invoke-RestMethod `
+            -Headers $headers `
+            -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases?per_page=100"
+          $previous = @($releases |
+            Where-Object { !$_.draft -and !$_.prerelease -and $_.tag_name -match '^v\d+\.\d+\.\d+$' } |
+            ForEach-Object {
+              try {
+                $releaseVersion = [version]$_.tag_name.Substring(1)
+                if ($releaseVersion -lt $currentVersion) {
+                  [PSCustomObject]@{ Release = $_; Version = $releaseVersion }
+                }
+              } catch { }
+            } |
+            Sort-Object Version -Descending |
+            Select-Object -First 1)
+          if ($previous.Count -eq 0) {
+            Write-Host "No older stable release exists for $currentVersion; real upgrade test is skipped."
+            "AIRPLAY_PREVIOUS_VERSION=none" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "has_previous=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            exit 0
           }
-          # Do not let a previous Gradle invocation leave a stale MSI beside
-          # the fixture; stale output was the source of false upgrade passes.
-          if (Test-Path '.\player\app\build\package') {
-            Remove-Item '.\player\app\build\package' -Recurse -Force
+          $release = $previous[0].Release
+          $fixtureVersion = $previous[0].Version.ToString()
+          $assetName = "AirPlay-Receiver-$fixtureVersion-windows-x64-setup.exe"
+          $asset = @($release.assets | Where-Object name -eq $assetName | Select-Object -First 1)
+          if ($asset.Count -ne 1) {
+            throw "Release $($release.tag_name) does not contain the expected asset '$assetName'"
           }
-          .\gradlew.bat "-PappVersion=$fixtureVersion" :player:app:packageWindows --console=plain
-          if ($LASTEXITCODE -ne 0) { throw "Upgrade fixture packaging failed with exit code $LASTEXITCODE" }
-          $fixtures = @(Get-ChildItem '.\player\app\build\package\installer\*.exe')
-          if ($fixtures.Count -ne 1) { throw "Expected one upgrade fixture, found $($fixtures.Count)" }
-          $fixtureMsis = @(Get-ChildItem `
-            '.\player\app\build\package\installer-temp\images\win-exe.image\*.msi')
-          if ($fixtureMsis.Count -ne 1) {
-            throw "Expected one retained upgrade fixture MSI, found $($fixtureMsis.Count)"
+          $target = Join-Path $env:RUNNER_TEMP 'airplay-previous-version.exe'
+          if (!(Test-Path $target)) {
+            Invoke-WebRequest -UseBasicParsing -Headers $headers -OutFile $target -Uri $asset.browser_download_url
           }
-          Copy-Item $fixtureMsis[0].FullName `
-            (Join-Path $env:RUNNER_TEMP 'airplay-previous-version.msi')
+          if (!(Test-Path $target)) { throw "Unable to download $assetName" }
+          if ($asset.digest -notmatch '^sha256:([0-9a-fA-F]{64})$') {
+            throw "Release asset $assetName has no SHA-256 digest"
+          }
+          $expectedHash = $Matches[1].ToLowerInvariant()
+          $actualHash = (Get-FileHash -Algorithm SHA256 $target).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) {
+            Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
+            throw "Previous release checksum mismatch: expected $expectedHash, found $actualHash"
+          }
           "AIRPLAY_PREVIOUS_VERSION=$fixtureVersion" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "Previous-version upgrade fixture: $fixtureVersion (current: $currentVersion)" | Write-Host
+          "AIRPLAY_PREVIOUS_ASSET=$assetName" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "has_previous=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "Previous real release: $($release.tag_name), asset $assetName, sha256 $actualHash" | Write-Host
       - name: Build Windows installer
         if: github.event_name != 'pull_request'
         shell: pwsh
@@ -189,12 +218,12 @@ jobs:
           .\gradlew.bat :player:app:signWindowsPackage --console=plain
           if ($LASTEXITCODE -ne 0) { throw "Gradle packaging failed with exit code $LASTEXITCODE" }
       - name: Verify live previous-version upgrade
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && steps.resolve_previous.outputs.has_previous == 'true'
         timeout-minutes: 8
         shell: pwsh
         run: |
           . .\.github\scripts\InstallerTestHelpers.ps1
-          $fixture = Join-Path $env:RUNNER_TEMP 'airplay-previous-version.msi'
+          $fixture = Join-Path $env:RUNNER_TEMP 'airplay-previous-version.exe'
           $installers = @(Get-ChildItem '.\player\app\build\package\installer\*.exe')
           if ($installers.Count -ne 1) { throw "Expected one Windows installer, found $($installers.Count)" }
           $installer = $installers[0]
@@ -212,16 +241,14 @@ jobs:
           $customInstallDir = Join-Path $env:LOCALAPPDATA 'AirPlay Receiver for Windows Upgrade Test'
           $fixtureLog = Join-Path $env:RUNNER_TEMP 'airplay-previous-install.log'
           $installArguments = @(
-            '/qn'
-            '/i'
-            $fixture
-            'REBOOT=ReallySuppress'
-            '/l*vx!'
+            '/quiet'
+            '/norestart'
+            '/log'
             $fixtureLog
             "INSTALLDIR=$customInstallDir"
           )
           Invoke-AirPlayInstallerProcess `
-            -FilePath 'msiexec.exe' `
+            -FilePath $fixture `
             -Arguments $installArguments `
             -LogPath $fixtureLog `
             -TimeoutSeconds 180

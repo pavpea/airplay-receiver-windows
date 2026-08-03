@@ -2,6 +2,7 @@ package io.github.qiuspace.airplay.app.ui;
 
 import io.github.qiuspace.airplay.app.i18n.I18n;
 import io.github.qiuspace.airplay.app.settings.AppSettings;
+import com.formdev.flatlaf.extras.FlatSVGIcon;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -41,6 +42,8 @@ final class SettingsPanel extends JPanel {
     private final JLabel displayModeLabel = new JLabel();
     private final JLabel customSizeLabel = new JLabel();
     private final JLabel maxFpsLabel = new JLabel();
+    private final JLabel displayInfo = infoLabel();
+    private final JLabel frameRateInfo = infoLabel();
     private final JLabel themeLabel = new JLabel();
     private final JLabel languageLabel = new JLabel();
     private final JLabel behaviorLabel = new JLabel();
@@ -50,7 +53,10 @@ final class SettingsPanel extends JPanel {
             new JComboBox<>(AppSettings.DisplayMode.values());
     private final JSpinner width = new JSpinner(new SpinnerNumberModel(1920, 640, 7680, 1));
     private final JSpinner height = new JSpinner(new SpinnerNumberModel(1080, 480, 4320, 1));
-    private final JComboBox<Integer> fps = new JComboBox<>(AppSettings.FRAME_RATE_OPTIONS.toArray(Integer[]::new));
+    private final JComboBox<AppSettings.FrameRateMode> fps =
+            new JComboBox<>(AppSettings.FrameRateMode.values());
+    private final JSpinner customFps = new JSpinner(new SpinnerNumberModel(
+            60, AppSettings.MIN_CUSTOM_FRAME_RATE, AppSettings.MAX_CUSTOM_FRAME_RATE, 1));
     private final JComboBox<AppSettings.ThemeMode> theme =
             new JComboBox<>(AppSettings.ThemeMode.values());
     private final JComboBox<AppSettings.LanguageMode> language =
@@ -87,7 +93,9 @@ final class SettingsPanel extends JPanel {
         displayMode.setSelectedItem(settings.displayMode());
         width.setValue(settings.customWidth());
         height.setValue(settings.customHeight());
-        fps.setSelectedItem(AppSettings.normalizeFrameRate(settings.maxFps()));
+        AppSettings normalized = settings.normalized();
+        fps.setSelectedItem(normalized.frameRateMode());
+        customFps.setValue(normalized.customFrameRate());
         theme.setSelectedItem(settings.theme());
         language.setSelectedItem(settings.language());
         startWithWindows.setSelected(settings.startWithWindows());
@@ -108,6 +116,8 @@ final class SettingsPanel extends JPanel {
         displayModeLabel.setText(i18n.text("settings.displayMode"));
         customSizeLabel.setText(i18n.text("settings.customSize"));
         maxFpsLabel.setText(i18n.text("settings.maxFps"));
+        displayInfo.setToolTipText(i18n.text("settings.displayInfo"));
+        frameRateInfo.setToolTipText(i18n.text("settings.frameRateInfo"));
         themeLabel.setText(i18n.text("settings.theme"));
         languageLabel.setText(i18n.text("settings.language"));
         behaviorLabel.setText(i18n.text("settings.behavior"));
@@ -130,6 +140,7 @@ final class SettingsPanel extends JPanel {
         width.setName("settings.width");
         height.setName("settings.height");
         fps.setName("settings.fps");
+        customFps.setName("settings.customFps");
         theme.setName("settings.theme");
         language.setName("settings.language");
         startWithWindows.setName("settings.startWithWindows");
@@ -138,14 +149,19 @@ final class SettingsPanel extends JPanel {
 
         JPanel receiverForm = sectionPanel();
         addRow(receiverForm, 0, receiverNameLabel, receiverName);
-        addRow(receiverForm, 1, displayModeLabel, displayMode);
+        addRow(receiverForm, 1, labelWithInfo(displayModeLabel, displayInfo), displayMode);
         JPanel dimensions = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
         dimensions.setOpaque(false);
         dimensions.add(width);
         dimensions.add(new JLabel("×"));
         dimensions.add(height);
         addRow(receiverForm, 2, customSizeLabel, dimensions);
-        addRow(receiverForm, 3, maxFpsLabel, fps);
+        JPanel frameRate = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        frameRate.setOpaque(false);
+        frameRate.add(fps);
+        frameRate.add(customFps);
+        frameRate.add(new JLabel("Hz"));
+        addRow(receiverForm, 3, labelWithInfo(maxFpsLabel, frameRateInfo), frameRate);
         addVerticalFiller(receiverForm, 4);
 
         JPanel applicationForm = sectionPanel();
@@ -204,23 +220,20 @@ final class SettingsPanel extends JPanel {
         });
         width.addChangeListener(event -> scheduleAutoSave());
         height.addChangeListener(event -> scheduleAutoSave());
-        fps.addActionListener(event -> scheduleAutoSave());
+        fps.addActionListener(event -> {
+            updateCustomFields();
+            scheduleAutoSave();
+        });
+        customFps.addChangeListener(event -> scheduleAutoSave());
         theme.addActionListener(event -> scheduleAutoSave());
         language.addActionListener(event -> scheduleAutoSave());
         startWithWindows.addActionListener(event -> scheduleAutoSave());
         bringToFront.addActionListener(event -> scheduleAutoSave());
         closeToTray.addActionListener(event -> scheduleAutoSave());
         installLocalizedRenderer(displayMode, "displayMode.");
+        installLocalizedRenderer(fps, "frameRateMode.");
         installLocalizedRenderer(theme, "theme.");
         installLocalizedRenderer(language, "language.");
-        fps.setRenderer(new DefaultListCellRenderer() {
-            @Override
-            public Component getListCellRendererComponent(JList<?> list, Object value, int index,
-                                                           boolean selected, boolean focused) {
-                String text = value instanceof Integer rate ? rate + " Hz" : "";
-                return super.getListCellRendererComponent(list, text, index, selected, focused);
-            }
-        });
     }
 
     void flushAutoSave() {
@@ -259,17 +272,19 @@ final class SettingsPanel extends JPanel {
     private AppSettings readSettings() {
         return new AppSettings(receiverName.getText(),
                 (AppSettings.DisplayMode) displayMode.getSelectedItem(),
-                (Integer) width.getValue(), (Integer) height.getValue(), (Integer) fps.getSelectedItem(),
+                (Integer) width.getValue(), (Integer) height.getValue(), original.maxFps(),
                 (AppSettings.ThemeMode) theme.getSelectedItem(),
                 (AppSettings.LanguageMode) language.getSelectedItem(),
                 startWithWindows.isSelected(), bringToFront.isSelected(), closeToTray.isSelected(),
-                true, original.volume()).normalized();
+                true, original.volume(), (AppSettings.FrameRateMode) fps.getSelectedItem(),
+                (Integer) customFps.getValue()).normalized();
     }
 
     private void updateCustomFields() {
         boolean custom = displayMode.getSelectedItem() == AppSettings.DisplayMode.CUSTOM;
         width.setEnabled(custom);
         height.setEnabled(custom);
+        customFps.setEnabled(fps.getSelectedItem() == AppSettings.FrameRateMode.CUSTOM);
     }
 
     private <T extends Enum<T>> void installLocalizedRenderer(JComboBox<T> comboBox, String prefix) {
@@ -304,7 +319,22 @@ final class SettingsPanel extends JPanel {
         return label;
     }
 
-    private static void addRow(JPanel form, int row, JLabel label, Component input) {
+    private static JLabel infoLabel() {
+        JLabel label = new JLabel(new FlatSVGIcon("icons/info.svg", 14, 14));
+        label.setName("settings.info");
+        label.setBorder(BorderFactory.createEmptyBorder(0, 4, 0, 0));
+        return label;
+    }
+
+    private static JPanel labelWithInfo(JLabel label, JLabel info) {
+        JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        panel.setOpaque(false);
+        panel.add(label);
+        panel.add(info);
+        return panel;
+    }
+
+    private static void addRow(JPanel form, int row, Component label, Component input) {
         GridBagConstraints constraints = new GridBagConstraints();
         constraints.gridx = 0;
         constraints.gridy = row;

@@ -5,6 +5,8 @@ import io.github.qiuspace.airplay.app.settings.AppSettings;
 import org.junit.jupiter.api.Test;
 
 import javax.swing.JLabel;
+import javax.swing.JComboBox;
+import javax.swing.JSpinner;
 import javax.swing.JTextField;
 import javax.swing.SwingUtilities;
 import java.awt.Component;
@@ -48,6 +50,29 @@ class SettingsPanelTest {
 
         assertThat(saved.get()).isNull();
         assertThat(find(panel, "settings.validation", JLabel.class).isVisible()).isTrue();
+    }
+
+    @Test
+    void customFrameRateIsShownAndSavedAsTheBroadcastLimit() throws Exception {
+        AtomicReference<AppSettings> saved = new AtomicReference<>();
+
+        SettingsPanel panel = onEdt(() -> {
+            SettingsPanel created = new SettingsPanel(new I18n(AppSettings.LanguageMode.EN));
+            created.open(AppSettings.defaults(), saved::set);
+            @SuppressWarnings("unchecked")
+            JComboBox<AppSettings.FrameRateMode> modes = find(
+                    created, "settings.fps", JComboBox.class);
+            modes.setSelectedItem(AppSettings.FrameRateMode.CUSTOM);
+            find(created, "settings.customFps", JSpinner.class).setValue(144);
+            created.flushAutoSave();
+            return created;
+        });
+
+        assertThat(panel).isNotNull();
+        assertThat(saved.get()).isNotNull();
+        assertThat(saved.get().frameRateMode()).isEqualTo(AppSettings.FrameRateMode.CUSTOM);
+        assertThat(saved.get().customFrameRate()).isEqualTo(144);
+        assertThat(saved.get().resolvedFrameRate()).isEqualTo(144);
     }
 
     private static <T extends Component> T find(Container root, String name, Class<T> type) {

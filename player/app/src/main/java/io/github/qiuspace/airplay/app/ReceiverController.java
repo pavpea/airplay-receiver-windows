@@ -6,6 +6,7 @@ import io.github.qiuspace.airplay.app.settings.SettingsStore;
 import io.github.qiuspace.airplay.app.theme.ThemeManager;
 import io.github.qiuspace.airplay.player.gstreamer.GstPlayer;
 import io.github.qiuspace.airplay.player.gstreamer.GstPlayerListener;
+import io.github.qiuspace.airplay.player.gstreamer.PlaybackMetrics;
 import io.github.qiuspace.airplay.server.AirPlayConfig;
 import io.github.qiuspace.airplay.server.AirPlayServer;
 import io.github.qiuspace.airplay.server.AirPlayServerListener;
@@ -61,6 +62,11 @@ public final class ReceiverController implements AutoCloseable {
             @Override
             public void onVideoFrameReady(int width, int height) {
                 onEdt(receiverView -> receiverView.onVideoFrameReady(width, height));
+            }
+
+            @Override
+            public void onPlaybackMetrics(PlaybackMetrics metrics) {
+                onEdt(receiverView -> receiverView.onPlaybackMetrics(metrics));
             }
 
             @Override
@@ -215,7 +221,7 @@ public final class ReceiverController implements AutoCloseable {
         config.setServerName(appSettings.receiverName());
         config.setWidth(dimensions[0]);
         config.setHeight(dimensions[1]);
-        config.setFps(appSettings.maxFps());
+        config.setFps(appSettings.resolvedFrameRate());
         config.setMirrorOnly(true);
         return config;
     }
@@ -238,7 +244,7 @@ public final class ReceiverController implements AutoCloseable {
                 && first.displayMode() == second.displayMode()
                 && first.customWidth() == second.customWidth()
                 && first.customHeight() == second.customHeight()
-                && first.maxFps() == second.maxFps();
+                && first.resolvedFrameRate() == second.resolvedFrameRate();
     }
 
     private void onEdt(java.util.function.Consumer<ReceiverView> action) {

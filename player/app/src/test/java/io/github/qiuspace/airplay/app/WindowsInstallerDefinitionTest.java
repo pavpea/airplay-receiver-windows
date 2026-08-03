@@ -491,9 +491,12 @@ class WindowsInstallerDefinitionTest {
                 "actions/cache@v5",
                 "actions/upload-artifact@v7",
                 "gradle/actions/setup-gradle@v6",
+                "Resolve and download real previous release",
+                "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases",
+                "sha256:",
+                "airplay-previous-version.exe",
                 "AIRPLAY_REMOVE_USER_DATA=1",
                 "airplay-previous-install.log",
-                "airplay-previous-version.msi",
                 "AIRPLAY_TEST_MSI",
                 "InteractiveUninstallTest.ps1",
                 "Assert-AirPlayControlPanelUninstallDefinition",
@@ -524,7 +527,11 @@ class WindowsInstallerDefinitionTest {
                 "MaintenanceWelcomeDlg",
                 "AirPlayMaintenanceTypeDlg",
                 "MSIRESTARTMANAGERCONTROL=Disable");
-        assertThat(workflow).doesNotContain("name: airplay-receiver-windows-x64");
+        assertThat(workflow)
+                .doesNotContain("Build previous-version upgrade fixture")
+                .doesNotContain("synthetic 0.9.0")
+                .doesNotContain("airplay-previous-version.msi")
+                .doesNotContain("name: airplay-receiver-windows-x64");
         assertThat(Stream.of(
                         Path.of(".github/workflows/release.yaml"),
                         Path.of("../../.github/workflows/release.yaml"))

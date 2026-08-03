@@ -8,6 +8,9 @@ public interface GstPlayerListener {
     default void onVideoFrameReady(int width, int height) {
     }
 
+    default void onPlaybackMetrics(PlaybackMetrics metrics) {
+    }
+
     default void onPlaybackError(String message, Throwable error) {
     }
 

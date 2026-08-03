@@ -109,7 +109,9 @@ class SettingsStoreTest {
         assertThat(migrated.displayMode()).isEqualTo(AppSettings.DisplayMode.CUSTOM);
         assertThat(migrated.customWidth()).isEqualTo(1280);
         assertThat(migrated.customHeight()).isEqualTo(720);
-        assertThat(migrated.maxFps()).isEqualTo(60);
+        assertThat(migrated.maxFps()).isEqualTo(30);
+        assertThat(migrated.frameRateMode()).isEqualTo(AppSettings.FrameRateMode.CUSTOM);
+        assertThat(migrated.customFrameRate()).isEqualTo(30);
         assertThat(Files.isRegularFile(store.settingsFile())).isTrue();
     }
 
@@ -126,5 +128,19 @@ class SettingsStoreTest {
         assertThat(normalized.maxFps()).isEqualTo(120);
         assertThat(normalized.receiverEnabled()).isTrue();
         assertThat(normalized.volume()).isEqualTo(1);
+    }
+
+    @Test
+    void preservesCustomFrameRateWithinTheSupportedRange() {
+        AppSettings settings = new AppSettings("Office", AppSettings.DisplayMode.PRIMARY_DISPLAY,
+                1920, 1080, 1, AppSettings.ThemeMode.SYSTEM, AppSettings.LanguageMode.EN,
+                false, true, true, true, 0.5,
+                AppSettings.FrameRateMode.CUSTOM, 360);
+
+        AppSettings normalized = settings.normalized();
+
+        assertThat(normalized.frameRateMode()).isEqualTo(AppSettings.FrameRateMode.CUSTOM);
+        assertThat(normalized.customFrameRate()).isEqualTo(360);
+        assertThat(normalized.resolvedFrameRate()).isEqualTo(360);
     }
 }
