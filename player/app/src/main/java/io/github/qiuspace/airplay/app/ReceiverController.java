@@ -7,7 +7,6 @@ import io.github.qiuspace.airplay.app.theme.ThemeManager;
 import io.github.qiuspace.airplay.player.gstreamer.GstPlayer;
 import io.github.qiuspace.airplay.player.gstreamer.GstPlayerListener;
 import io.github.qiuspace.airplay.player.gstreamer.PlaybackMetrics;
-import io.github.qiuspace.airplay.server.AirPlayConfig;
 import io.github.qiuspace.airplay.server.AirPlayServer;
 import io.github.qiuspace.airplay.server.AirPlayServerListener;
 import io.github.qiuspace.airplay.server.ServerState;
@@ -16,7 +15,6 @@ import io.github.qiuspace.airplay.server.SessionState;
 import lombok.extern.slf4j.Slf4j;
 
 import javax.swing.JComponent;
-import java.awt.DisplayMode;
 import java.awt.GraphicsEnvironment;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
@@ -39,20 +37,21 @@ public final class ReceiverController implements AutoCloseable {
     private volatile AppSettings settings;
     private volatile ReceiverView view;
     private volatile AirPlayServer server;
-    private volatile boolean pendingRestart;
+    private final LatestRestartCoordinator<ReceiverBroadcastConfig> restartCoordinator;
     private volatile String displayedSessionId;
 
     public ReceiverController(SettingsStore settingsStore, AppSettings settings, ThemeManager themeManager) {
+        AppSettings normalizedSettings = settings.normalized();
         this.settingsStore = settingsStore;
-        this.settings = settings;
+        this.settings = normalizedSettings;
         this.themeManager = themeManager;
         try {
-            WindowsIntegration.setStartWithWindows(settings.startWithWindows());
+            WindowsIntegration.setStartWithWindows(normalizedSettings.startWithWindows());
         } catch (RuntimeException error) {
             log.warn("Unable to synchronize the Windows startup setting", error);
         }
         player = new GstPlayer();
-        player.setVolume(PerceptualVolume.toGain(settings.volume()));
+        player.setVolume(PerceptualVolume.toGain(normalizedSettings.volume()));
         player.setListener(new GstPlayerListener() {
             @Override
             public void onVideoFormatChanged(int width, int height) {
@@ -79,7 +78,14 @@ public final class ReceiverController implements AutoCloseable {
                 disconnectSession();
             }
         });
-        server = createServer(settings);
+        ReceiverBroadcastConfig initialBroadcastConfig = toBroadcastConfig(normalizedSettings);
+        server = createServer(initialBroadcastConfig);
+        restartCoordinator = new LatestRestartCoordinator<>(
+                worker,
+                () -> closed.get() || server.activeSession().isPresent(),
+                initialBroadcastConfig,
+                config -> server.restart(config.toAirPlayConfig()),
+                this::onRestartFailure);
     }
 
     public void attachView(ReceiverView view) {
@@ -102,7 +108,7 @@ public final class ReceiverController implements AutoCloseable {
 
     public void updateSettings(AppSettings updated) {
         AppSettings normalized = updated.normalized();
-        AppSettings previous = settings;
+        ReceiverBroadcastConfig desiredBroadcastConfig = toBroadcastConfig(normalized);
         settings = normalized;
         settingsStore.save(normalized);
         player.setVolume(PerceptualVolume.toGain(normalized.volume()));
@@ -114,13 +120,7 @@ public final class ReceiverController implements AutoCloseable {
         }
         onEdt(receiverView -> receiverView.onSettingsChanged(normalized));
 
-        if (!serverSettingsEqual(previous, normalized)) {
-            if (server.activeSession().isPresent()) {
-                pendingRestart = true;
-            } else {
-                restartReceiver();
-            }
-        }
+        restartCoordinator.request(desiredBroadcastConfig);
     }
 
     public void setVolume(double volume) {
@@ -155,15 +155,7 @@ public final class ReceiverController implements AutoCloseable {
     }
 
     public void restartReceiver() {
-        worker.execute(() -> {
-            try {
-                server.restart(toServerConfig(settings));
-                pendingRestart = false;
-            } catch (Exception error) {
-                log.error("Unable to restart AirPlay receiver", error);
-                onEdt(receiverView -> receiverView.onError(error.getMessage(), error));
-            }
-        });
+        restartCoordinator.force(toBroadcastConfig(settings));
     }
 
     @Override
@@ -183,8 +175,8 @@ public final class ReceiverController implements AutoCloseable {
         }
     }
 
-    private AirPlayServer createServer(AppSettings appSettings) {
-        return new AirPlayServer(toServerConfig(appSettings), player, new AirPlayServerListener() {
+    private AirPlayServer createServer(ReceiverBroadcastConfig config) {
+        return new AirPlayServer(config.toAirPlayConfig(), player, new AirPlayServerListener() {
             @Override
             public void onServerStateChanged(ServerState state) {
                 onEdt(receiverView -> receiverView.onServerState(state));
@@ -202,9 +194,7 @@ public final class ReceiverController implements AutoCloseable {
                         displayedSessionId = null;
                         onEdt(ReceiverView::onSessionStopped);
                     }
-                    if (pendingRestart && server.activeSession().isEmpty()) {
-                        restartReceiver();
-                    }
+                    restartCoordinator.resume();
                 }
             }
 
@@ -215,36 +205,15 @@ public final class ReceiverController implements AutoCloseable {
         });
     }
 
-    private AirPlayConfig toServerConfig(AppSettings appSettings) {
-        int[] dimensions = displayDimensions(appSettings);
-        AirPlayConfig config = new AirPlayConfig();
-        config.setServerName(appSettings.receiverName());
-        config.setWidth(dimensions[0]);
-        config.setHeight(dimensions[1]);
-        config.setFps(appSettings.resolvedFrameRate());
-        config.setMirrorOnly(true);
-        return config;
+    private ReceiverBroadcastConfig toBroadcastConfig(AppSettings appSettings) {
+        return ReceiverBroadcastConfig.from(appSettings,
+                () -> GraphicsEnvironment.getLocalGraphicsEnvironment()
+                        .getDefaultScreenDevice().getDisplayMode());
     }
 
-    private int[] displayDimensions(AppSettings appSettings) {
-        return switch (appSettings.displayMode()) {
-            case HD_720 -> new int[]{1280, 720};
-            case FULL_HD_1080 -> new int[]{1920, 1080};
-            case CUSTOM -> new int[]{appSettings.customWidth(), appSettings.customHeight()};
-            case PRIMARY_DISPLAY -> {
-                DisplayMode mode = GraphicsEnvironment.getLocalGraphicsEnvironment()
-                        .getDefaultScreenDevice().getDisplayMode();
-                yield new int[]{mode.getWidth(), mode.getHeight()};
-            }
-        };
-    }
-
-    private boolean serverSettingsEqual(AppSettings first, AppSettings second) {
-        return first.receiverName().equals(second.receiverName())
-                && first.displayMode() == second.displayMode()
-                && first.customWidth() == second.customWidth()
-                && first.customHeight() == second.customHeight()
-                && first.resolvedFrameRate() == second.resolvedFrameRate();
+    private void onRestartFailure(Throwable error) {
+        log.error("Unable to restart AirPlay receiver", error);
+        onEdt(receiverView -> receiverView.onError(error.getMessage(), error));
     }
 
     private void onEdt(java.util.function.Consumer<ReceiverView> action) {
