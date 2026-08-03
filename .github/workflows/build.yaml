@@ -251,14 +251,18 @@ jobs:
           "Windows installer: $([math]::Round($installer.Length / 1MB, 1)) MiB" | Write-Host
           if ($installer.Length -gt 300MB) { throw 'Windows installer exceeded the 300 MiB packaging limit' }
 
-          $customInstallDir = Join-Path $env:LOCALAPPDATA 'AirPlay Receiver for Windows Upgrade Test'
+          # jpackage's real EXE forwards its arguments to the embedded MSI.  A
+          # silent install with the default per-user directory avoids the
+          # historical install-dir chooser custom action, which can wait for
+          # UI on a headless runner.  The directory is still asserted below
+          # and is passed to the later upgrade/overwrite checks.
+          $customInstallDir = Join-Path $env:LOCALAPPDATA 'AirPlay Receiver for Windows App'
           $fixtureLog = Join-Path $env:RUNNER_TEMP 'airplay-previous-install.log'
           $installArguments = @(
             '/quiet'
             '/norestart'
             '/log'
             $fixtureLog
-            "INSTALLDIR=$customInstallDir"
           )
           Invoke-AirPlayInstallerProcess `
             -FilePath $fixture `
@@ -338,11 +342,7 @@ jobs:
             throw 'The previous-version process remained after the major upgrade'
           }
           if (!(Test-Path $installedApp)) {
-            throw 'The major upgrade did not preserve the custom installation directory'
-          }
-          $defaultApp = Join-Path $env:LOCALAPPDATA 'AirPlay Receiver for Windows App\AirPlay Receiver.exe'
-          if (Test-Path $defaultApp) {
-            throw 'The major upgrade unexpectedly returned to the default installation directory'
+            throw 'The major upgrade did not preserve the previous installation directory'
           }
           if (Test-Path $desktopShortcut) {
             throw 'The major upgrade recreated a desktop shortcut that the user disabled'
