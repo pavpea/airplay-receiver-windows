@@ -250,7 +250,6 @@ final class PlaybackWindow extends JFrame {
         String tooltip = "<html>"
                 + i18n.text("player.detailsFormat", sourceWidth, sourceHeight) + "<br>"
                 + i18n.text("player.detailsMetrics", fps) + "<br>"
-                + i18n.text("player.detailsCodec") + "<br>"
                 + i18n.text("player.detailsDecoder", decoder)
                 + "</html>";
         titleControls.setPlaybackDetails(tooltip);
