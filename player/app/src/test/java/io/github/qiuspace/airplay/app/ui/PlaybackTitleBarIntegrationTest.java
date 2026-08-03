@@ -57,6 +57,7 @@ class PlaybackTitleBarIntegrationTest {
                     }, ignored -> {
                     }, () -> {
                     });
+            bar.setPlaybackDetails("<html>1920x1080<br>60.0 fps<br>D3D11 H.264</html>");
             result.setJMenuBar(bar);
             result.setSize(640, 400);
             result.setLocation(-10_000, -10_000);
@@ -106,6 +107,35 @@ class PlaybackTitleBarIntegrationTest {
             assertEquals(lightExpected, onEdt(lightCaptionButtons::getBackground));
             assertEquals(lightExpected,
                     onEdt(() -> renderedPixel(lightCaptionButtons, 2, 2)));
+
+            HoverInfoLabel details = onEdt(() -> findNamed(
+                    fixture.bar(), "playbackBar.details", HoverInfoLabel.class));
+            assertNotNull(details);
+            assertTrue(onEdt(details::isShowing));
+            assertTrue(onEdt(() -> {
+                details.dispatchEvent(new MouseEvent(
+                        details,
+                        MouseEvent.MOUSE_ENTERED,
+                        System.currentTimeMillis(),
+                        0,
+                        details.getWidth() / 2,
+                        details.getHeight() / 2,
+                        0,
+                        false));
+                return details.isInfoPopupVisible();
+            }));
+            assertFalse(onEdt(() -> {
+                details.dispatchEvent(new MouseEvent(
+                        details,
+                        MouseEvent.MOUSE_EXITED,
+                        System.currentTimeMillis(),
+                        0,
+                        details.getWidth() / 2,
+                        details.getHeight() / 2,
+                        0,
+                        false));
+                return details.isInfoPopupVisible();
+            }));
         } finally {
             onEdt(() -> {
                 fixture.frame().dispose();
@@ -226,6 +256,22 @@ class PlaybackTitleBarIntegrationTest {
             }
             if (child instanceof Container nested) {
                 Component match = findComponent(nested, className);
+                if (match != null) {
+                    return match;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static <T extends Component> T findNamed(
+            Container parent, String name, Class<T> type) {
+        for (Component child : parent.getComponents()) {
+            if (name.equals(child.getName()) && type.isInstance(child)) {
+                return type.cast(child);
+            }
+            if (child instanceof Container nested) {
+                T match = findNamed(nested, name, type);
                 if (match != null) {
                     return match;
                 }

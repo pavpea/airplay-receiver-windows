@@ -2,7 +2,6 @@ package io.github.qiuspace.airplay.app.ui;
 
 import io.github.qiuspace.airplay.app.i18n.I18n;
 import io.github.qiuspace.airplay.app.settings.AppSettings;
-import com.formdev.flatlaf.extras.FlatSVGIcon;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -22,6 +21,7 @@ import javax.swing.event.DocumentListener;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
+import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.GridBagConstraints;
@@ -40,10 +40,9 @@ final class SettingsPanel extends JPanel {
     private final JLabel applicationSection = sectionHeading();
     private final JLabel receiverNameLabel = new JLabel();
     private final JLabel displayModeLabel = new JLabel();
-    private final JLabel customSizeLabel = new JLabel();
     private final JLabel maxFpsLabel = new JLabel();
-    private final JLabel displayInfo = infoLabel();
-    private final JLabel frameRateInfo = infoLabel();
+    private final HoverInfoLabel displayInfo = infoLabel("settings.displayInfo");
+    private final HoverInfoLabel frameRateInfo = infoLabel("settings.frameRateInfo");
     private final JLabel themeLabel = new JLabel();
     private final JLabel languageLabel = new JLabel();
     private final JLabel behaviorLabel = new JLabel();
@@ -53,10 +52,12 @@ final class SettingsPanel extends JPanel {
             new JComboBox<>(AppSettings.DisplayMode.values());
     private final JSpinner width = new JSpinner(new SpinnerNumberModel(1920, 640, 7680, 1));
     private final JSpinner height = new JSpinner(new SpinnerNumberModel(1080, 480, 4320, 1));
+    private final JPanel customResolutionFields = inlinePanel("settings.customResolutionFields");
     private final JComboBox<AppSettings.FrameRateMode> fps =
             new JComboBox<>(AppSettings.FrameRateMode.values());
     private final JSpinner customFps = new JSpinner(new SpinnerNumberModel(
             60, AppSettings.MIN_CUSTOM_FRAME_RATE, AppSettings.MAX_CUSTOM_FRAME_RATE, 1));
+    private final JPanel customFrameRateFields = inlinePanel("settings.customFrameRateFields");
     private final JComboBox<AppSettings.ThemeMode> theme =
             new JComboBox<>(AppSettings.ThemeMode.values());
     private final JComboBox<AppSettings.LanguageMode> language =
@@ -82,6 +83,7 @@ final class SettingsPanel extends JPanel {
         setBorder(BorderFactory.createEmptyBorder(2, 6, 0, 6));
         buildUi();
         refreshTexts();
+        updateCustomFields();
     }
 
     void open(AppSettings settings, Consumer<AppSettings> onSave) {
@@ -114,10 +116,9 @@ final class SettingsPanel extends JPanel {
         applicationSection.setText(i18n.text("settings.applicationSection"));
         receiverNameLabel.setText(i18n.text("settings.receiverName"));
         displayModeLabel.setText(i18n.text("settings.displayMode"));
-        customSizeLabel.setText(i18n.text("settings.customSize"));
         maxFpsLabel.setText(i18n.text("settings.maxFps"));
-        displayInfo.setToolTipText(i18n.text("settings.displayInfo"));
-        frameRateInfo.setToolTipText(i18n.text("settings.frameRateInfo"));
+        displayInfo.setInfoText(i18n.text("settings.displayInfo"));
+        frameRateInfo.setInfoText(i18n.text("settings.frameRateInfo"));
         themeLabel.setText(i18n.text("settings.theme"));
         languageLabel.setText(i18n.text("settings.language"));
         behaviorLabel.setText(i18n.text("settings.behavior"));
@@ -146,23 +147,34 @@ final class SettingsPanel extends JPanel {
         startWithWindows.setName("settings.startWithWindows");
         bringToFront.setName("settings.bringToFront");
         closeToTray.setName("settings.closeToTray");
+        configureModeCombo(displayMode);
+        configureModeCombo(fps);
+        configureInlineSpinner(width, 70);
+        configureInlineSpinner(height, 70);
+        configureInlineSpinner(customFps, 64);
 
         JPanel receiverForm = sectionPanel();
         addRow(receiverForm, 0, receiverNameLabel, receiverName);
-        addRow(receiverForm, 1, labelWithInfo(displayModeLabel, displayInfo), displayMode);
-        JPanel dimensions = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
-        dimensions.setOpaque(false);
-        dimensions.add(width);
-        dimensions.add(new JLabel("×"));
-        dimensions.add(height);
-        addRow(receiverForm, 2, customSizeLabel, dimensions);
-        JPanel frameRate = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
-        frameRate.setOpaque(false);
+        customResolutionFields.add(width);
+        customResolutionFields.add(Box.createHorizontalStrut(8));
+        customResolutionFields.add(new JLabel("×"));
+        customResolutionFields.add(Box.createHorizontalStrut(8));
+        customResolutionFields.add(height);
+        JPanel resolution = inlinePanel("settings.resolutionFields");
+        resolution.add(displayMode);
+        resolution.add(Box.createHorizontalStrut(8));
+        resolution.add(customResolutionFields);
+        addRow(receiverForm, 1, labelWithInfo(displayModeLabel, displayInfo), resolution);
+
+        customFrameRateFields.add(customFps);
+        customFrameRateFields.add(Box.createHorizontalStrut(8));
+        customFrameRateFields.add(new JLabel("Hz"));
+        JPanel frameRate = inlinePanel("settings.frameRateFields");
         frameRate.add(fps);
-        frameRate.add(customFps);
-        frameRate.add(new JLabel("Hz"));
-        addRow(receiverForm, 3, labelWithInfo(maxFpsLabel, frameRateInfo), frameRate);
-        addVerticalFiller(receiverForm, 4);
+        frameRate.add(Box.createHorizontalStrut(8));
+        frameRate.add(customFrameRateFields);
+        addRow(receiverForm, 2, labelWithInfo(maxFpsLabel, frameRateInfo), frameRate);
+        addVerticalFiller(receiverForm, 3);
 
         JPanel applicationForm = sectionPanel();
         addRow(applicationForm, 0, themeLabel, theme);
@@ -281,10 +293,12 @@ final class SettingsPanel extends JPanel {
     }
 
     private void updateCustomFields() {
-        boolean custom = displayMode.getSelectedItem() == AppSettings.DisplayMode.CUSTOM;
-        width.setEnabled(custom);
-        height.setEnabled(custom);
-        customFps.setEnabled(fps.getSelectedItem() == AppSettings.FrameRateMode.CUSTOM);
+        customResolutionFields.setVisible(
+                displayMode.getSelectedItem() == AppSettings.DisplayMode.CUSTOM);
+        customFrameRateFields.setVisible(
+                fps.getSelectedItem() == AppSettings.FrameRateMode.CUSTOM);
+        revalidate();
+        repaint();
     }
 
     private <T extends Enum<T>> void installLocalizedRenderer(JComboBox<T> comboBox, String prefix) {
@@ -319,9 +333,9 @@ final class SettingsPanel extends JPanel {
         return label;
     }
 
-    private static JLabel infoLabel() {
-        JLabel label = new JLabel(new FlatSVGIcon("icons/info.svg", 14, 14));
-        label.setName("settings.info");
+    private static HoverInfoLabel infoLabel(String name) {
+        HoverInfoLabel label = new HoverInfoLabel(14);
+        label.setName(name);
         label.setBorder(BorderFactory.createEmptyBorder(0, 4, 0, 0));
         return label;
     }
@@ -332,6 +346,28 @@ final class SettingsPanel extends JPanel {
         panel.add(label);
         panel.add(info);
         return panel;
+    }
+
+    private static JPanel inlinePanel(String name) {
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.X_AXIS));
+        panel.setName(name);
+        panel.setOpaque(false);
+        return panel;
+    }
+
+    private static void configureModeCombo(JComboBox<?> comboBox) {
+        Dimension preferred = comboBox.getPreferredSize();
+        comboBox.setMinimumSize(new Dimension(82, preferred.height));
+        comboBox.setMaximumSize(new Dimension(Integer.MAX_VALUE, preferred.height));
+    }
+
+    private static void configureInlineSpinner(JSpinner spinner, int width) {
+        Dimension preferred = spinner.getPreferredSize();
+        Dimension compact = new Dimension(width, preferred.height);
+        spinner.setMinimumSize(compact);
+        spinner.setPreferredSize(compact);
+        spinner.setMaximumSize(compact);
     }
 
     private static void addRow(JPanel form, int row, Component label, Component input) {

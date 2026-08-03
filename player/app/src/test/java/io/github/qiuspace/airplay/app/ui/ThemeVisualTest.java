@@ -34,7 +34,7 @@ class ThemeVisualTest {
     @ParameterizedTest
     @ValueSource(strings = {
             "logs.svg", "settings.svg", "settings-selected.svg",
-            "volume.svg", "muted.svg", "pin.svg"
+            "volume.svg", "muted.svg", "pin.svg", "info.svg"
     })
     void titleBarIconsRemainVisibleInLightAndDarkThemes(String resource) {
         FlatLightLaf.setup();
@@ -42,6 +42,17 @@ class ThemeVisualTest {
 
         FlatDarkLaf.setup();
         assertThat(contrastingPixels(resource, DARK_TITLE)).isGreaterThan(8);
+    }
+
+    @Test
+    void informationIconUsesTheSameToolbarPaletteInBothThemes() {
+        FlatLightLaf.setup();
+        assertThat(renderIcon("info.svg", 24))
+                .matches(image -> containsColor(image, new Color(0x4F5D75)));
+
+        FlatDarkLaf.setup();
+        assertThat(renderIcon("info.svg", 24))
+                .matches(image -> containsColor(image, new Color(0xD6DEED)));
     }
 
     @ParameterizedTest
@@ -156,6 +167,21 @@ class ThemeVisualTest {
                 .paintIcon(new JLabel(), graphics, 0, 0);
         graphics.dispose();
         return image;
+    }
+
+    private static boolean containsColor(BufferedImage image, Color expected) {
+        for (int y = 0; y < image.getHeight(); y++) {
+            for (int x = 0; x < image.getWidth(); x++) {
+                Color actual = new Color(image.getRGB(x, y), true);
+                if (actual.getAlpha() > 0
+                        && actual.getRed() == expected.getRed()
+                        && actual.getGreen() == expected.getGreen()
+                        && actual.getBlue() == expected.getBlue()) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private static Rectangle opaqueBounds(BufferedImage image) {

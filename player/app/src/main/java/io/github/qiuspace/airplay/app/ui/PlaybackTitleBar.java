@@ -45,8 +45,7 @@ final class PlaybackTitleBar extends JMenuBar {
     private final JLabel sessionLabel =
             new JLabel(new FlatSVGIcon("icons/app-icon.svg", 20, 20));
     private final java.awt.Component captionGap = Box.createHorizontalStrut(8);
-    private final JLabel detailsLabel = new JLabel(
-            new FlatSVGIcon("icons/info.svg", 18, 18));
+    private final HoverInfoLabel detailsLabel = new HoverInfoLabel(18);
     private final JToggleButton muteButton = toggleButton("icons/volume.svg", 18);
     private final JSlider popupVolume;
     private final JPopupMenu volumePopup = new JPopupMenu();
@@ -148,7 +147,7 @@ final class PlaybackTitleBar extends JMenuBar {
     }
 
     void setPlaybackDetails(String details) {
-        detailsLabel.setToolTipText(details);
+        detailsLabel.setInfoText(details);
         detailsAvailable = details != null && !details.isBlank();
         detailsLabel.setVisible(detailsAvailable);
         revalidate();
@@ -156,7 +155,7 @@ final class PlaybackTitleBar extends JMenuBar {
     }
 
     void clearVideoFormat() {
-        detailsLabel.setToolTipText(null);
+        detailsLabel.setInfoText(null);
         detailsAvailable = false;
         detailsLabel.setVisible(false);
         revalidate();
@@ -165,6 +164,7 @@ final class PlaybackTitleBar extends JMenuBar {
 
     void refreshTheme() {
         setBackground(playbackBackground());
+        detailsLabel.refreshTheme();
         applyVolumePopupTheme();
         revalidate();
         repaint();

@@ -75,9 +75,11 @@ class PlaybackTitleBarTest {
 
         assertThat(bar.isFormatVisible()).isTrue();
         assertThat(bar.getComponent(0)).isInstanceOf(JPanel.class);
-        assertThat(find(bar, "playbackBar.details", JLabel.class)).isNotNull();
-        assertThat(find(bar, "playbackBar.details", JLabel.class).getToolTipText())
+        assertThat(find(bar, "playbackBar.details", HoverInfoLabel.class)).isNotNull();
+        assertThat(find(bar, "playbackBar.details", HoverInfoLabel.class).infoText())
                 .contains("1920x1080", "60.0 fps");
+        assertThat(find(bar, "playbackBar.details", HoverInfoLabel.class).getToolTipText())
+                .isNull();
     }
 
     @Test
