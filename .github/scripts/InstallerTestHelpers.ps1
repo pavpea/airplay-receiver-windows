@@ -41,7 +41,13 @@ function Invoke-AirPlayInstallerProcess {
         [Parameter(Mandatory)]
         [string] $LogPath,
 
-        [int] $TimeoutSeconds = 180
+        [int] $TimeoutSeconds = 180,
+
+        # A jpackage EXE is a bootstrapper around an embedded MSI.  Its
+        # per-user Windows Installer child can remain in the interactive
+        # session after the bootstrapper has completed, so callers that invoke
+        # the real EXE may opt out of the strict direct-msiexec child check.
+        [switch] $AllowInstallerChildren
     )
 
     $beforeMsi = @(Get-AirPlayInstallerClientProcesses |
@@ -84,17 +90,19 @@ function Invoke-AirPlayInstallerProcess {
             }
         }
 
-        do {
-            $newMsi = @(Get-AirPlayInstallerClientProcesses |
-                Where-Object { $_.Id -notin $beforeMsi })
-            if ($newMsi.Count -eq 0) {
-                break
-            }
-            Start-Sleep -Milliseconds 250
-        } while ([DateTime]::UtcNow -lt $deadline)
+        if (!$AllowInstallerChildren) {
+            do {
+                $newMsi = @(Get-AirPlayInstallerClientProcesses |
+                    Where-Object { $_.Id -notin $beforeMsi })
+                if ($newMsi.Count -eq 0) {
+                    break
+                }
+                Start-Sleep -Milliseconds 250
+            } while ([DateTime]::UtcNow -lt $deadline)
 
-        if ($newMsi.Count -ne 0) {
-            throw "Windows Installer child processes did not exit"
+            if ($newMsi.Count -ne 0) {
+                throw "Windows Installer child processes did not exit"
+            }
         }
     } catch {
         $processSnapshot = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |

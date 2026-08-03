@@ -264,10 +264,16 @@ jobs:
             -FilePath $fixture `
             -Arguments $installArguments `
             -LogPath $fixtureLog `
-            -TimeoutSeconds 180
+            -TimeoutSeconds 180 `
+            -AllowInstallerChildren
 
           $installedApp = Join-Path $customInstallDir 'AirPlay Receiver.exe'
-          if (!(Test-Path $installedApp)) {
+          $installDeadline = [DateTime]::UtcNow.AddSeconds(60)
+          while (!(Test-Path -LiteralPath $installedApp) -and
+              [DateTime]::UtcNow -lt $installDeadline) {
+            Start-Sleep -Milliseconds 500
+          }
+          if (!(Test-Path -LiteralPath $installedApp)) {
             throw "Previous-version fixture ignored custom install directory '$customInstallDir'"
           }
           "AIRPLAY_TEST_INSTALL_DIR=$customInstallDir" | Out-File -FilePath $env:GITHUB_ENV -Append
