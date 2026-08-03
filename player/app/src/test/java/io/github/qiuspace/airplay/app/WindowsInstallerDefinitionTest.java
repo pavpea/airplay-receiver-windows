@@ -495,6 +495,8 @@ class WindowsInstallerDefinitionTest {
                 "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases",
                 "sha256:",
                 "airplay-previous-version.exe",
+                "Expand-AirPlayEmbeddedMsi",
+                "airplay-previous-version.msi",
                 "AIRPLAY_REMOVE_USER_DATA=1",
                 "airplay-previous-install.log",
                 "AIRPLAY_TEST_MSI",
@@ -530,7 +532,6 @@ class WindowsInstallerDefinitionTest {
         assertThat(workflow)
                 .doesNotContain("Build previous-version upgrade fixture")
                 .doesNotContain("synthetic 0.9.0")
-                .doesNotContain("airplay-previous-version.msi")
                 .doesNotContain("name: airplay-receiver-windows-x64");
         assertThat(Stream.of(
                         Path.of(".github/workflows/release.yaml"),

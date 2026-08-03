@@ -251,25 +251,38 @@ jobs:
           "Windows installer: $([math]::Round($installer.Length / 1MB, 1)) MiB" | Write-Host
           if ($installer.Length -gt 300MB) { throw 'Windows installer exceeded the 300 MiB packaging limit' }
 
-          # jpackage's real EXE forwards its arguments to the embedded MSI.  A
-          # silent install with the default per-user directory avoids the
-          # historical install-dir chooser custom action, which can wait for
-          # UI on a headless runner.  The directory is still asserted below
-          # and is passed to the later upgrade/overwrite checks.
+          # The real release asset is a jpackage EXE.  Extract its embedded
+          # MSI payload and invoke that payload directly so the upgrade test
+          # is deterministic on a headless runner while still exercising the
+          # exact installer shipped in the historical release.
+          $fixtureMsi = Join-Path $env:RUNNER_TEMP 'airplay-previous-version.msi'
+          Expand-AirPlayEmbeddedMsi `
+            -ExecutablePath $fixture `
+            -OutputPath $fixtureMsi | Out-Null
+          if (!(Test-Path -LiteralPath $fixtureMsi) -or
+              (Get-Item -LiteralPath $fixtureMsi).Length -lt 1MB) {
+            throw 'The real previous-release EXE did not yield a valid embedded MSI'
+          }
+
+          # Use the default per-user directory for the historical release.
+          # The directory is asserted below and is passed to the later
+          # upgrade/overwrite checks.
           $customInstallDir = Join-Path $env:LOCALAPPDATA 'AirPlay Receiver for Windows App'
           $fixtureLog = Join-Path $env:RUNNER_TEMP 'airplay-previous-install.log'
           $installArguments = @(
-            '/quiet'
+            '/qn'
+            '/i'
+            $fixtureMsi
             '/norestart'
-            '/log'
+            'REBOOT=ReallySuppress'
+            '/l*vx!'
             $fixtureLog
           )
           Invoke-AirPlayInstallerProcess `
-            -FilePath $fixture `
+            -FilePath 'msiexec.exe' `
             -Arguments $installArguments `
             -LogPath $fixtureLog `
-            -TimeoutSeconds 180 `
-            -AllowInstallerChildren
+            -TimeoutSeconds 180
 
           $installedApp = Join-Path $customInstallDir 'AirPlay Receiver.exe'
           $installDeadline = [DateTime]::UtcNow.AddSeconds(60)

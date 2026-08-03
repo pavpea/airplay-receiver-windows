@@ -29,6 +29,84 @@ function ConvertTo-AirPlayInstallerArgument {
     $Argument
 }
 
+function Expand-AirPlayEmbeddedMsi {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string] $ExecutablePath,
+
+        [Parameter(Mandatory)]
+        [string] $OutputPath
+    )
+
+    # OpenJDK jpackage's Windows EXE is a thin wrapper that stores the real
+    # MSI as an RT_RCDATA resource named "msi".  Extracting that exact payload
+    # lets CI run the historical release with msiexec directly, without making
+    # the wrapper's UI or its nested process lifetime part of the test.
+    if ($null -eq ([System.Management.Automation.PSTypeName]'AirPlay.NativeMethods').Type) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace AirPlay {
+    public static class NativeMethods {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr LoadLibraryEx(
+            string fileName, IntPtr file, uint flags);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr FindResource(
+            IntPtr module, string name, IntPtr type);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern IntPtr LoadResource(
+            IntPtr module, IntPtr resource);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern IntPtr LockResource(IntPtr resource);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern uint SizeofResource(
+            IntPtr module, IntPtr resource);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool FreeLibrary(IntPtr module);
+    }
+}
+'@
+    }
+
+    $module = [AirPlay.NativeMethods]::LoadLibraryEx(
+        $ExecutablePath, [IntPtr]::Zero, 0x00000002)
+    if ($module -eq [IntPtr]::Zero) {
+        throw "Unable to open installer resources '$ExecutablePath' (Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))"
+    }
+    try {
+        # RT_RCDATA is resource type 10.  jpackage's MsiWrapper.cpp uses the
+        # same string resource name and type.
+        $resource = [AirPlay.NativeMethods]::FindResource(
+            $module, 'msi', [IntPtr]10)
+        if ($resource -eq [IntPtr]::Zero) {
+            throw "Installer '$ExecutablePath' does not contain an embedded msi resource"
+        }
+        $size = [AirPlay.NativeMethods]::SizeofResource($module, $resource)
+        if ($size -le 0) {
+            throw "Installer '$ExecutablePath' contains an empty msi resource"
+        }
+        $loaded = [AirPlay.NativeMethods]::LoadResource($module, $resource)
+        $address = [AirPlay.NativeMethods]::LockResource($loaded)
+        if ($address -eq [IntPtr]::Zero) {
+            throw "Unable to lock the embedded msi resource in '$ExecutablePath'"
+        }
+        $bytes = New-Object byte[] ([int]$size)
+        [Runtime.InteropServices.Marshal]::Copy($address, $bytes, 0, $bytes.Length)
+        [IO.File]::WriteAllBytes($OutputPath, $bytes)
+    } finally {
+        [AirPlay.NativeMethods]::FreeLibrary($module) | Out-Null
+    }
+    $OutputPath
+}
+
 function Invoke-AirPlayInstallerProcess {
     [CmdletBinding()]
     param(
@@ -41,13 +119,7 @@ function Invoke-AirPlayInstallerProcess {
         [Parameter(Mandatory)]
         [string] $LogPath,
 
-        [int] $TimeoutSeconds = 180,
-
-        # A jpackage EXE is a bootstrapper around an embedded MSI.  Its
-        # per-user Windows Installer child can remain in the interactive
-        # session after the bootstrapper has completed, so callers that invoke
-        # the real EXE may opt out of the strict direct-msiexec child check.
-        [switch] $AllowInstallerChildren
+        [int] $TimeoutSeconds = 180
     )
 
     $beforeMsi = @(Get-AirPlayInstallerClientProcesses |
@@ -90,19 +162,17 @@ function Invoke-AirPlayInstallerProcess {
             }
         }
 
-        if (!$AllowInstallerChildren) {
-            do {
-                $newMsi = @(Get-AirPlayInstallerClientProcesses |
-                    Where-Object { $_.Id -notin $beforeMsi })
-                if ($newMsi.Count -eq 0) {
-                    break
-                }
-                Start-Sleep -Milliseconds 250
-            } while ([DateTime]::UtcNow -lt $deadline)
-
-            if ($newMsi.Count -ne 0) {
-                throw "Windows Installer child processes did not exit"
+        do {
+            $newMsi = @(Get-AirPlayInstallerClientProcesses |
+                Where-Object { $_.Id -notin $beforeMsi })
+            if ($newMsi.Count -eq 0) {
+                break
             }
+            Start-Sleep -Milliseconds 250
+        } while ([DateTime]::UtcNow -lt $deadline)
+
+        if ($newMsi.Count -ne 0) {
+            throw "Windows Installer child processes did not exit"
         }
     } catch {
         $processSnapshot = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
