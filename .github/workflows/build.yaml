@@ -128,14 +128,25 @@ jobs:
             }
           }
           # The application still falls back to avdec_h264 when a particular
-          # driver cannot create a D3D11 device, but the packaged runtime must
-          # contain the plug-in.  Otherwise a hardware-capable installation
-          # would be permanently forced onto software decoding.
-          $d3d11Inspection = & "$gstRoot\bin\gst-inspect-1.0.exe" d3d11h264dec 2>&1
-          if ($LASTEXITCODE -ne 0) {
-            throw "The packaged GStreamer runtime is missing the D3D11 H.264 decoder: $($d3d11Inspection -join [Environment]::NewLine)"
+          # runner has no usable D3D11 adapter.  In that case gst-inspect may
+          # not register the adapter-specific d3d11h264dec element even though
+          # the plug-in is correctly packaged.  Validate the plug-in itself and
+          # only treat an actual load failure as an error; hardware selection is
+          # verified by the installed-app self-test on a capable Windows host.
+          $d3d11Dll = Join-Path $gstRoot 'lib\gstreamer-1.0\gstd3d11.dll'
+          if (!(Test-Path -LiteralPath $d3d11Dll -PathType Leaf)) {
+            throw "The packaged GStreamer runtime is missing $d3d11Dll"
           }
-          Write-Host 'D3D11 H.264 decoder is available in the packaged runtime.'
+          $d3d11Inspection = & "$gstRoot\bin\gst-inspect-1.0.exe" d3d11 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "The packaged GStreamer D3D11 plug-in failed to load: $($d3d11Inspection -join [Environment]::NewLine)"
+          }
+          $d3d11DecoderInspection = & "$gstRoot\bin\gst-inspect-1.0.exe" d3d11h264dec 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host 'D3D11 H.264 decoder is available in the packaged runtime.'
+          } else {
+            Write-Warning 'D3D11 plug-in is packaged, but this runner has no adapter-specific H.264 decoder; hardware-capable hosts will select it at runtime.'
+          }
       - name: Verify app image
         shell: pwsh
         run: |
